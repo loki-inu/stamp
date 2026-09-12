@@ -29,7 +29,10 @@ classifiers = [
 dependencies = []
 
 [project.optional-dependencies]
-dev = ["pytest>=7"]
+# Shrinks pages' preview pictures for embedding in stamps. Without it, only
+# small pictures are embedded and the rest get the empty "no preview" slot.
+preview = ["Pillow>=10"]
+dev = ["pytest>=7", "Pillow>=10"]
 
 [project.urls]
 Homepage = "https://github.com/loki-inu/stamp"
