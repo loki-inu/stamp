@@ -13,6 +13,22 @@ def _finder_at(code, x0, y0):
     return True
 
 
+def test_a_real_reader_decodes_the_stamp_payload():
+    """Round trip through an independent decoder, when one is installed."""
+    cv2 = pytest.importorskip("cv2")
+    np = pytest.importorskip("numpy")
+    payload = "stamp:sha256:" + "5c" * 32
+    code = qr.encode(payload)
+    n, s, quiet = code.size, 8, 4
+    img = np.full(((n + 2 * quiet) * s, (n + 2 * quiet) * s), 255, np.uint8)
+    for y in range(n):
+        for x in range(n):
+            if code.dark(x, y):
+                img[(y + quiet) * s:(y + quiet + 1) * s, (x + quiet) * s:(x + quiet + 1) * s] = 0
+    text, _, _ = cv2.QRCodeDetector().detectAndDecode(img)
+    assert text == payload
+
+
 def test_stamp_payload_fits_version_5():
     code = qr.encode("stamp:sha256:" + "0f" * 32)
     assert code.version == 5

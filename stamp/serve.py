@@ -48,12 +48,12 @@ class StampServer(ThreadingHTTPServer):
         return f"http://{host}:{port}"
 
     def bookmarklet(self) -> str:
-        """A ``javascript:`` URL that stamps the page you are looking at."""
-        add = f"{self.url}/add?popup=1&token={self.token}&url="
+        """A ``javascript:`` URL that prints a stamp for the page you are looking at."""
+        add = f"{self.url}/print?popup=1&token={self.token}&url="
         return (
             "javascript:(function(){window.open("
             f"'{add}'+encodeURIComponent(location.href),'stamp',"
-            "'width=460,height=760,menubar=no,toolbar=no,location=no');})();"
+            "'width=460,height=800,menubar=no,toolbar=no,location=no');})();"
         )
 
 
@@ -108,6 +108,12 @@ class _Handler(BaseHTTPRequestHandler):
             return self._album(query)
         if path == "/add":
             return self._add(query.get("url", [""])[0], query.get("token", [""])[0], query)
+        if path == "/print":
+            # Nothing is stamped yet: the page itself asks /add, then prints the answer.
+            return self._send(
+                HTTPStatus.OK,
+                _printer_page(query.get("url", [""])[0], query.get("token", [""])[0], query.get("popup", ["0"])[0] == "1"),
+            )
         if m := _STAMP_FILE.match(path):
             return self._stamp_file(m.group(1))
         if path == "/sheet":
@@ -288,6 +294,102 @@ def _result_page(stamp: Stamp, heading: str, detail: str, popup: bool, notes: li
     return _page(heading, body)
 
 
+_PRINTER_CSS = """
+:root { color-scheme: dark; }
+* { box-sizing: border-box; }
+html, body { margin: 0; min-height: 100%; }
+body { background: #0f0e0c; color: #e9e2d3; font: 15px/1.5 Georgia, 'Times New Roman', serif; display: flex; justify-content: center; }
+main { width: 100%; max-width: 420px; padding: 22px 18px 40px; }
+.printer { position: relative; z-index: 2; background: #d9d4cb; border-radius: 18px; padding: 16px 16px 12px; box-shadow: 0 10px 30px rgba(0,0,0,.6), inset 0 1px 0 #f4f1ea; }
+.printer .head { display: flex; align-items: center; justify-content: space-between; color: #4a453d; font: 12px ui-monospace, Menlo, Consolas, monospace; letter-spacing: 2px; text-transform: uppercase; }
+.printer .head a { color: #4a453d; text-decoration: none; background: #ece8df; padding: 4px 10px; border-radius: 12px; }
+.status { margin: 14px 0 4px; background: #ece8df; color: #3a352d; border-radius: 12px; padding: 12px 16px; display: flex; align-items: center; gap: 12px;
+  font: 14px ui-monospace, Menlo, Consolas, monospace; min-height: 46px; }
+.status.error { background: #e9d2cc; color: #5a2a22; }
+.spin { width: 16px; height: 16px; border: 2px solid #b8b1a3; border-top-color: #3a352d; border-radius: 50%; animation: spin .9s linear infinite; flex: none; }
+.done .spin { display: none; }
+@keyframes spin { to { transform: rotate(360deg); } }
+.slot { height: 12px; margin: 10px -4px -20px; background: #3a352d; border-radius: 6px; box-shadow: inset 0 3px 6px rgba(0,0,0,.7); position: relative; z-index: 3; }
+.out { overflow: hidden; margin: 0 22px; padding-bottom: 18px; }
+.paper { background: #fbf8f1; padding: 22px 18px 26px; transform: translateY(-104%); transition: transform 2.4s cubic-bezier(.22,.8,.2,1); position: relative;
+  box-shadow: 0 14px 30px rgba(0,0,0,.55); }
+.paper.printed { transform: translateY(0); }
+.paper::after { content: ""; position: absolute; left: 0; right: 0; bottom: -8px; height: 8px;
+  background: linear-gradient(-45deg, transparent 75%, #fbf8f1 0) 0 0 / 12px 12px repeat-x, linear-gradient(45deg, transparent 75%, #fbf8f1 0) 0 0 / 12px 12px repeat-x; }
+.paper img { display: block; width: 100%; }
+.paper dl { display: grid; grid-template-columns: max-content 1fr; gap: 3px 12px; margin: 16px 0 0; font: 11.5px/1.45 ui-monospace, Menlo, Consolas, monospace; color: #3a352d; }
+.paper dt { color: #8a8273; letter-spacing: 1px; text-transform: uppercase; font-size: 10px; padding-top: 1px; }
+.paper dd { margin: 0; overflow-wrap: anywhere; }
+.paper .thanks { margin: 18px 0 0; text-align: center; color: #6d665a; font: 12px ui-monospace, Menlo, Consolas, monospace; letter-spacing: 1px; }
+nav { display: flex; gap: 12px; flex-wrap: wrap; justify-content: center; margin-top: 22px; opacity: 0; transition: opacity .6s ease .9s; }
+nav.show { opacity: 1; }
+nav a, nav button { color: #f1ebdd; background: #2b2824; border: 1px solid #4a443a; border-radius: 3px; padding: 7px 14px;
+  text-decoration: none; font: 13px ui-monospace, Menlo, Consolas, monospace; letter-spacing: 1px; cursor: pointer; }
+nav a:hover, nav button:hover { background: #3a352d; }
+"""
+
+_PRINTER_JS = """
+(function () {
+  var cfg = %(cfg)s;
+  var status = document.getElementById('status'), text = document.getElementById('status-text');
+  var paper = document.getElementById('paper'), nav = document.getElementById('nav');
+  function fail(msg) { status.className = 'status error done'; text.textContent = msg; nav.className = 'show'; }
+  if (!cfg.url) { fail('No URL to stamp.'); return; }
+  text.textContent = 'Fetching ' + cfg.url.replace(/^https?:\\/\\//, '').slice(0, 60) + '…';
+  fetch('/add', { method: 'POST', headers: { 'Content-Type': 'application/json', 'Accept': 'application/json' },
+                  body: JSON.stringify({ url: cfg.url, token: cfg.token }) })
+    .then(function (r) { return r.json().then(function (j) { j.status = r.status; return j; }); })
+    .then(function (j) {
+      if (!j.ok) { fail(j.detail || j.message || 'Could not stamp that page.'); return; }
+      text.textContent = 'Printing your stamp…';
+      var img = document.getElementById('stamp');
+      img.alt = j.title || j.url;
+      img.onload = function () {
+        document.getElementById('d-title').textContent = j.title || j.url;
+        document.getElementById('d-url').textContent = j.url;
+        document.getElementById('d-hash').textContent = j.sha256;
+        document.getElementById('d-when').textContent = j.fetched_at + (j.created ? '' : '  (already in the album)');
+        requestAnimationFrame(function () { paper.className = 'paper printed'; });
+        setTimeout(function () {
+          status.className = 'status done';
+          text.textContent = (j.created ? 'Stamped  ' : 'Already filed  ') + j.short + '  ·  No. ' + String(j.number).padStart(3, '0');
+          nav.className = 'show';
+          document.getElementById('album-link').href = '/?added=' + j.sha256 + '#' + j.short;
+        }, 1400);
+      };
+      img.src = '/stamps/' + j.sha256 + '.svg';
+    })
+    .catch(function (e) { fail('The stamp server did not answer: ' + e); });
+})();
+"""
+
+
+def _printer_page(url: str, token: str, popup: bool) -> str:
+    """The receipt-printer moment: a slot, a status line, and the stamp sliding out."""
+    cfg = json.dumps({"url": url, "token": token}).replace("</", "<\\/")
+    target = "_blank" if popup else "_self"
+    close = '<button type="button" onclick="window.close()">Close</button>' if popup else ""
+    return (
+        "<!doctype html>\n"
+        '<html lang="en"><head><meta charset="utf-8"><title>Printing your stamp — stamp</title>'
+        '<meta name="viewport" content="width=device-width, initial-scale=1">'
+        f"<style>{_PRINTER_CSS}</style></head>\n"
+        "<body><main>"
+        '<div class="printer"><div class="head"><span>stamp</span>'
+        f'<a href="/" target="{target}">Album</a></div>'
+        '<div class="status" id="status"><span class="spin"></span><span id="status-text">Warming up…</span></div>'
+        '<div class="slot"></div></div>'
+        '<div class="out"><div class="paper" id="paper">'
+        '<img id="stamp" alt="">'
+        '<dl><dt>title</dt><dd id="d-title"></dd><dt>url</dt><dd id="d-url"></dd>'
+        '<dt>sha-256</dt><dd id="d-hash"></dd><dt>fetched</dt><dd id="d-when"></dd></dl>'
+        '<p class="thanks">Thank you for your page.</p>'
+        "</div></div>"
+        f'<nav id="nav"><a id="album-link" href="/" target="{target}">Album</a><a href="/sheet" target="{target}">Print sheet</a>{close}</nav>'
+        f"</main><script>{_PRINTER_JS % {'cfg': cfg}}</script></body></html>\n"
+    )
+
+
 _TOOLBAR_CSS = """
 .tools { display: flex; gap: 14px; align-items: center; flex-wrap: wrap; padding: 16px 48px; background: #242119; border-bottom: 1px solid #3a352d; }
 .tools form { display: flex; gap: 8px; flex: 1 1 360px; }
@@ -315,7 +417,7 @@ def _toolbar(server: StampServer, added: str | None) -> str:
     return (
         f"<style>{_TOOLBAR_CSS}</style>"
         '<div class="tools">'
-        '<form method="post" action="/add">'
+        '<form method="get" action="/print">'
         f'<input type="hidden" name="token" value="{escape(server.token)}">'
         '<input type="url" name="url" placeholder="https://… a page that mattered" required autofocus>'
         '<button type="submit">Stamp it</button></form>'

@@ -84,8 +84,9 @@ Both are plain files that work from `file://` with no server. Or run
 `stamp serve` starts a small server on `127.0.0.1` only. The album page it
 serves has a box to paste a URL into and a **Stamp this page** link: drag
 that to your bookmarks bar, and clicking it on any page opens a small window
-with the new stamp in it. There is a **Print sheet** button, and the page
-refreshes as you add stamps.
+in which a receipt printer fetches the page and the new stamp slides out of
+the slot. There is a **Print sheet** button, and the album page marks the
+stamp you just added.
 
 Every request that makes a stamp must carry a token that the server prints
 when it starts and bakes into the bookmarklet, so a web page you happen to be

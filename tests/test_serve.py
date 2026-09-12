@@ -54,6 +54,21 @@ def test_album_page_carries_form_and_bookmarklet(server, album):
     assert "No stamps yet" in text
 
 
+def test_print_page_stamps_nothing_by_itself(server, album):
+    """The printer page is inert HTML; its script calls /add with the token."""
+    assert "/print?popup=1&token=secret-token&url=" in server.bookmarklet()
+    status, headers, body = _get(server, "/print?popup=1&token=secret-token&url=" + quote("https://example.com/rich", safe=""))
+    assert status == 200 and headers["Content-Type"].startswith("text/html")
+    text = body.decode()
+    assert '"url": "https://example.com/rich"' in text and '"token": "secret-token"' in text
+    assert "Printing your stamp" in text and "fetch('/add'" in text and "window.close()" in text
+    assert album.stamps() == []  # merely opening the page files nothing
+
+    # Script tags in a URL cannot break out of the embedded JSON.
+    status, _, body = _get(server, "/print?token=x&url=" + quote("https://e.example/</script><script>alert(1)</script>", safe=""))
+    assert status == 200 and b"</script><script>alert" not in body
+
+
 def test_add_needs_the_token(server, album):
     status, _, body = _get(server, "/add?url=https://example.com/&token=wrong")
     assert status == 403 and b"token" in body
