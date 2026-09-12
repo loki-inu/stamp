@@ -1,0 +1,45 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "stamp-philately"
+version = "0.1.0"
+description = "Postage stamps for the web: snapshot a page, get a printable stamp, keep an album."
+readme = "README.md"
+license = { file = "LICENSE" }
+requires-python = ">=3.11"
+authors = [{ name = "loki-inu" }]
+keywords = ["philately", "stamps", "svg", "snapshot", "archive", "qr"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: End Users/Desktop",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Internet :: WWW/HTTP",
+    "Topic :: Multimedia :: Graphics",
+    "Topic :: System :: Archiving",
+]
+dependencies = []
+
+[project.optional-dependencies]
+dev = ["pytest>=7"]
+
+[project.urls]
+Homepage = "https://github.com/loki-inu/stamp"
+Issues = "https://github.com/loki-inu/stamp/issues"
+
+[project.scripts]
+stamp = "stamp.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["stamp*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
