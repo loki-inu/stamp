@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "stamp-philately"
-version = "0.1.0"
+version = "0.2.0"
 description = "Postage stamps for the web: snapshot a page, get a printable stamp, keep an album."
 readme = "README.md"
 license = { file = "LICENSE" }
