@@ -4,7 +4,7 @@ import xml.etree.ElementTree as ET
 from stamp import qr
 from stamp.preview import Preview
 from stamp.store import Stamp
-from stamp.svg import human_size, ink_for, render_album, render_sheet, render_stamp, shorten, wrap_title
+from stamp.svg import human_size, ink_for, render_album, render_sheet, render_sheet_page, render_stamp, shorten, wrap_title
 
 SVG_NS = "{http://www.w3.org/2000/svg}"
 
@@ -178,6 +178,38 @@ def test_sheet_carries_previews_per_stamp():
     assert text.count("NO PREVIEW") == 2
     ids = [e.get("id") for e in root.iter() if e.get("id")]
     assert len(ids) == len(set(ids))
+
+
+def test_small_pictures_sit_in_the_middle_of_the_panel():
+    from tests.test_preview import tiny_png
+
+    s = _stamps(2)[1]
+    s.preview_kind = "icon"
+    text = render_stamp(s, Preview(data=tiny_png(180, 180), mime="image/png", width=180, height=180))
+    root = ET.fromstring(text)
+    (image,) = list(root.iter(f"{SVG_NS}image"))
+    assert image.get("preserveAspectRatio") == "xMidYMid meet"
+    assert float(image.get("width")) == 120  # drawn at two thirds, never blown up
+    assert "SITE ICON" in text
+
+
+def test_sheet_page_pins_the_paper_size():
+    stamps = _stamps(2)
+    svg = render_sheet(stamps, paper="letter", title="Issue one")
+    html = render_sheet_page(svg, paper="letter", title="Issue one", count=2)
+    assert html.startswith("<!doctype html>")
+    assert "@page { size: 279.4mm 215.9mm; margin: 0; }" in html
+    assert "<?xml" not in html and "<svg" in html and "ISSUE ONE" in html
+    assert "2 stamps · LETTER landscape" in html
+    assert "window.print()" in html
+
+
+def test_album_toolbar_and_highlight():
+    stamps = _stamps(3)
+    html = render_album(stamps, toolbar='<div class="tools">TOOLS</div>', highlight=stamps[1].sha256)
+    assert 'class="tools">TOOLS' in html
+    assert html.count('class="new"') == 1
+    assert f'id="{stamps[1].short}"' in html
 
 
 def test_album_shows_descriptions():
