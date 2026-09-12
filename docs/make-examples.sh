@@ -30,7 +30,8 @@ do
     "$PYTHON" -m stamp add "$url"
 done
 
-"$PYTHON" -m stamp sheet --out docs/example-sheet.svg --title "Stamp album · sheet of eight"
+"$PYTHON" -m stamp sheet --out "$STAMP_HOME/sheet.svg" --title "Stamp album · sheet of eight"
+cp "$STAMP_HOME/sheet.svg" docs/example-sheet.svg  # the print-ready sheet.html is not kept; it duplicates the SVG
 
 # The path of the stamp whose list line matches a pattern.
 svg_of() { "$PYTHON" -m stamp show "$("$PYTHON" -m stamp list | grep -F "$1" | head -n1 | awk '{print $2}')" | awk '/^stamp /{print $2}'; }

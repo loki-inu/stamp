@@ -12,4 +12,5 @@ venv/
 .stamp/
 sheet.svg
 album.html
+sheet.html
 *.stamp.svg
