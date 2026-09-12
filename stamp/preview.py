@@ -31,7 +31,10 @@ PREVIEW_W, PREVIEW_H = 496, 280
 JPEG_QUALITY = 72
 # Without Pillow we cannot shrink, so we only embed pictures that are already small.
 RAW_EMBED_MAX = 320 * 1024
+RAW_EMBED_MIN_SIDE = 120  # anything smaller would be blown up and blur
 MAX_SOURCE_PIXELS = 40_000_000
+MIN_SOURCE_SIDE = 48  # a 16 or 32 pixel favicon is not a picture of anything
+MAX_UPSCALE = 1.6
 
 _MIME_EXT = {"image/jpeg": "jpg", "image/png": "png", "image/gif": "gif", "image/webp": "webp"}
 
@@ -105,13 +108,15 @@ def prepare(data: bytes, content_type: str = "") -> Preview | None:
     if mime is None or len(data) > RAW_EMBED_MAX:
         return None
     size = image_size(data, mime)
+    if size and min(size) < RAW_EMBED_MIN_SIDE:
+        return None
     return Preview(data=data, mime=mime, width=size[0] if size else None, height=size[1] if size else None)
 
 
 def _prepare_with_pillow(data: bytes) -> Preview | None:
     try:
         with Image.open(io.BytesIO(data)) as im:
-            if im.width * im.height > MAX_SOURCE_PIXELS or im.width < 8 or im.height < 8:
+            if im.width * im.height > MAX_SOURCE_PIXELS or min(im.width, im.height) < MIN_SOURCE_SIDE:
                 return None
             im.load()
             # Transparent pictures (logos, mostly) go onto white paper, not black.
@@ -123,13 +128,16 @@ def _prepare_with_pillow(data: bytes) -> Preview | None:
             grey = ImageOps.autocontrast(im.convert("L"), cutoff=1)
             target = PREVIEW_W / PREVIEW_H
             ratio = (grey.width / grey.height) / target
-            if 0.7 <= ratio <= 1.45:
+            if 0.7 <= ratio <= 1.45 and grey.width >= PREVIEW_W * 0.75:
                 # Near enough the panel's shape: crop to fill it, favouring the top.
                 fitted = ImageOps.fit(grey, (PREVIEW_W, PREVIEW_H), method=Image.Resampling.LANCZOS, centering=(0.5, 0.4))
             else:
-                # Tall or very wide pictures (covers, logos, banners) are shown
-                # whole on white, which the stamp prints as paper.
-                inner = ImageOps.contain(grey, (PREVIEW_W - 24, PREVIEW_H - 24), method=Image.Resampling.LANCZOS)
+                # Tall, very wide or small pictures (covers, logos, icons) are
+                # shown whole on white, which the stamp prints as paper, and
+                # are never blown up much.
+                box_w = min(PREVIEW_W - 24, int(grey.width * MAX_UPSCALE))
+                box_h = min(PREVIEW_H - 24, int(grey.height * MAX_UPSCALE))
+                inner = ImageOps.contain(grey, (max(1, box_w), max(1, box_h)), method=Image.Resampling.LANCZOS)
                 fitted = Image.new("L", (PREVIEW_W, PREVIEW_H), 255)
                 fitted.paste(inner, ((PREVIEW_W - inner.width) // 2, (PREVIEW_H - inner.height) // 2))
             out = io.BytesIO()

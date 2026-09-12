@@ -37,11 +37,13 @@ def test_sniff_and_size_from_headers():
 
 def test_without_pillow_small_pictures_are_embedded_as_they_are(monkeypatch):
     monkeypatch.setattr(preview, "HAVE_PIL", False)
-    png = tiny_png(10, 20)
+    png = tiny_png(160, 200)
     got = prepare(png, "image/png")
     assert got is not None
     assert got.data == png and got.mime == "image/png" and got.ext == "png"
-    assert (got.width, got.height) == (10, 20)
+    assert (got.width, got.height) == (160, 200)
+    # A favicon-sized picture would only be blown up and blur: refused.
+    assert prepare(tiny_png(32, 32), "image/png") is None
 
 
 def test_without_pillow_large_or_unknown_pictures_are_skipped(monkeypatch):

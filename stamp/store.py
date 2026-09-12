@@ -22,7 +22,7 @@ from pathlib import Path
 from .fetch import host_of
 from .preview import Preview, sniff_mime
 
-# 1: url, title, hash, size. 2: adds description, preview, preview_source.
+# 1: url, title, hash, size. 2: adds description, preview, preview_source, preview_kind.
 # Stamps written by either version read and draw fine; missing fields are None.
 FORMAT_VERSION = 2
 SHORT_HASH_LEN = 12
@@ -77,6 +77,7 @@ class Stamp:
     description: str | None = None
     preview: str | None = None  # file name under stamps/, e.g. "<sha256>.preview.jpg"
     preview_source: str | None = None  # where the picture came from
+    preview_kind: str | None = None  # "image" (og:image and friends) or "icon" (the site's icon)
     format: int = FORMAT_VERSION
     extra: dict = field(default_factory=dict)
 
@@ -235,6 +236,7 @@ class Album:
         description: str | None = None,
         preview: Preview | None = None,
         preview_source: str | None = None,
+        preview_kind: str | None = None,
     ) -> tuple[Stamp, bool]:
         """File ``body`` under its hash and write a stamp for it.
 
@@ -276,6 +278,7 @@ class Album:
             description=description,
             preview=preview_name,
             preview_source=preview_source if preview_name else None,
+            preview_kind=(preview_kind or "image") if preview_name else None,
         )
         _atomic_write(self.svg_path(digest), render_stamp(stamp, preview).encode("utf-8"))
         _atomic_write(self.meta_path(digest), stamp.to_json().encode("utf-8"))

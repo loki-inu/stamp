@@ -229,16 +229,40 @@ def _duotone_filter(p: str, ink: str) -> str:
     )
 
 
+def _tag(right: float, bottom: float, text: str, ink: str) -> str:
+    """A small outlined tag, anchored by its bottom-right corner."""
+    tag_w, tag_h = 10 + 3.75 * len(text) + 1.2 * (len(text) - 1), 12
+    tx, ty = right - tag_w, bottom - tag_h
+    return (
+        f'<rect x="{_fmt(tx)}" y="{_fmt(ty)}" width="{_fmt(tag_w)}" height="{tag_h}" fill="{PAPER}" '
+        f'stroke="{ink}" stroke-width="0.7"/>'
+        + _text(tx + tag_w / 2, ty + 8.6, text, 6.2, MONO, ink, weight="600", anchor="middle", spacing=1.2)
+    )
+
+
 def _preview_panel(stamp: Stamp, preview: Preview | None, p: str, pal: dict[str, str]) -> str:
     x, y, w, h = PANEL
     ink = pal["ink"]
     out = []
     if preview is not None:
         uri = f"data:{preview.mime};base64,{base64.b64encode(preview.data).decode('ascii')}"
-        out.append(
-            f'<image x="{x}" y="{y}" width="{w}" height="{h}" preserveAspectRatio="xMidYMid slice" '
-            f'clip-path="url(#{p}-panel)" filter="url(#{p}-duo)" href="{uri}"/>'
-        )
+        # A picture smaller than the panel (a raw-embedded icon, without
+        # Pillow) sits in the middle at a modest size instead of being blown up.
+        small = preview.width and preview.height and preview.width < w * 1.5 and preview.height < h * 1.5
+        if small:
+            iw, ih = preview.width / 1.5, preview.height / 1.5  # type: ignore[operator]
+            out.append(f'<rect x="{x}" y="{y}" width="{w}" height="{h}" fill="{PAPER}"/>')
+            out.append(
+                f'<image x="{_fmt(x + (w - iw) / 2)}" y="{_fmt(y + (h - ih) / 2)}" width="{_fmt(iw)}" height="{_fmt(ih)}" '
+                f'preserveAspectRatio="xMidYMid meet" filter="url(#{p}-duo)" href="{uri}"/>'
+            )
+        else:
+            out.append(
+                f'<image x="{x}" y="{y}" width="{w}" height="{h}" preserveAspectRatio="xMidYMid slice" '
+                f'clip-path="url(#{p}-panel)" filter="url(#{p}-duo)" href="{uri}"/>'
+            )
+        if stamp.preview_kind == "icon":
+            out.append(_tag(x + w - 6, y + h - 6, "SITE ICON", ink))
     else:
         # An empty photo slot: ruled paper, a monogram of the host, and a tag.
         out.append(f'<rect x="{x}" y="{y}" width="{w}" height="{h}" fill="{pal["wash"]}"/>')
@@ -252,13 +276,7 @@ def _preview_panel(stamp: Stamp, preview: Preview | None, p: str, pal: dict[str,
         out.append(
             _text(x + w / 2, y + h / 2 + 27, letter, 78, SERIF, ink, weight="700", anchor="middle", opacity=0.16)
         )
-        tag_w, tag_h = 58, 12
-        tx, ty = x + w - tag_w - 6, y + h - tag_h - 6
-        out.append(
-            f'<rect x="{_fmt(tx)}" y="{_fmt(ty)}" width="{tag_w}" height="{tag_h}" fill="{PAPER}" '
-            f'stroke="{ink}" stroke-width="0.7"/>'
-        )
-        out.append(_text(tx + tag_w / 2, ty + 8.6, "NO PREVIEW", 6.2, MONO, ink, weight="600", anchor="middle", spacing=1.2))
+        out.append(_tag(x + w - 6, y + h - 6, "NO PREVIEW", ink))
     # Frame and corner brackets, like the mount around an identity photograph.
     out.append(f'<rect x="{x}" y="{y}" width="{w}" height="{h}" fill="none" stroke="{ink}" stroke-width="1"/>')
     b, o = 6, 3.5
@@ -542,6 +560,50 @@ def render_sheet(
     return "".join(out)
 
 
+_SHEET_PAGE_CSS = """
+@page { size: %(w)smm %(h)smm; margin: 0; }
+* { box-sizing: border-box; }
+html, body { margin: 0; background: #2b2824; }
+.bar { position: sticky; top: 0; display: flex; gap: 18px; align-items: center; padding: 12px 20px; background: #1c1a17;
+  color: #cfc6b4; font: 13px/1.4 ui-monospace, Menlo, Consolas, monospace; border-bottom: 1px solid #3a352d; }
+.bar b { color: #f1ebdd; letter-spacing: 2px; text-transform: uppercase; font-weight: 600; }
+.bar span { color: #a79f8f; }
+.bar button { margin-left: auto; padding: 7px 16px; border: 1px solid #a79f8f; border-radius: 3px; background: #f1ebdd;
+  color: #1c1a17; font: inherit; font-weight: 600; letter-spacing: 1px; cursor: pointer; }
+.bar button:hover { background: #fff; }
+.page { width: %(w)smm; height: %(h)smm; margin: 28px auto; background: #fff; box-shadow: 0 8px 30px rgba(0,0,0,.5); }
+.page svg { display: block; width: %(w)smm; height: %(h)smm; }
+@media print { html, body { background: #fff; } .bar { display: none; } .page { margin: 0; box-shadow: none; } }
+"""
+
+
+def render_sheet_page(sheet_svg: str, paper: str = "a4", title: str | None = None, count: int | None = None) -> str:
+    """An HTML page that prints ``sheet_svg`` at exactly its paper size.
+
+    Browsers print SVG files with their own idea of margins and scale; this
+    wrapper pins the page size with ``@page`` so the sheet comes out at 100%
+    on the paper it was drawn for. The SVG is inlined, so the page is one
+    self-contained file that works from ``file://``.
+    """
+    wmm, hmm = PAPER_SIZES_MM[paper.lower()]
+    heading = title or "Stamp album · sheet of eight"
+    body = sheet_svg.split("?>", 1)[-1].strip() if sheet_svg.lstrip().startswith("<?xml") else sheet_svg
+    counted = f"{count} stamp{'s' if count != 1 else ''} · " if count is not None else ""
+    return (
+        "<!doctype html>\n"
+        '<html lang="en"><head><meta charset="utf-8">\n'
+        f"<title>{_esc(heading)} — print</title>\n"
+        '<meta name="viewport" content="width=device-width, initial-scale=1">\n'
+        f"<style>{_SHEET_PAGE_CSS % {'w': _fmt(wmm), 'h': _fmt(hmm)}}</style></head>\n"
+        "<body>\n"
+        f'<div class="bar"><b>{_esc(heading)}</b><span>{counted}{paper.upper()} landscape · print at 100%, no margins, '
+        "on full-sheet label paper, then cut along the perforations</span>"
+        '<button type="button" onclick="window.print()">Print</button></div>\n'
+        f'<div class="page">{body}</div>\n'
+        "</body></html>\n"
+    )
+
+
 # ------------------------------------------------------------- the album
 
 _ALBUM_CSS = """
@@ -569,15 +631,21 @@ footer code { font: 12px ui-monospace, Menlo, Consolas, monospace; }
 """
 
 
-def render_album(stamps: Iterable[Stamp], title: str = "Stamp album") -> str:
-    """A static, file://-friendly gallery of the album's stamps."""
+def render_album(stamps: Iterable[Stamp], title: str = "Stamp album", *, toolbar: str = "", highlight: str | None = None) -> str:
+    """A static, file://-friendly gallery of the album's stamps.
+
+    ``toolbar`` is extra markup placed under the header (the local server
+    puts its form and bookmarklet there); ``highlight`` is the hash of a
+    stamp to single out.
+    """
     stamps = list(stamps)
     cards = []
     for s in stamps:
         svg = f"stamps/{s.sha256}.svg"
         about = f"<p>{_esc(s.description)}</p>" if s.description else ""
+        klass = ' class="new"' if s.sha256 == highlight else ""
         cards.append(
-            "<figure>"
+            f'<figure{klass} id="{s.short}">'
             f'<a href="{svg}" title="Open stamp"><img src="{svg}" alt="{_esc(s.label)}" loading="lazy"></a>'
             "<figcaption>"
             f"<b title=\"{_esc(s.label)}\">{_esc(s.label)}</b>"
@@ -596,6 +664,7 @@ def render_album(stamps: Iterable[Stamp], title: str = "Stamp album") -> str:
         '<meta name="viewport" content="width=device-width, initial-scale=1">\n'
         f"<style>{_ALBUM_CSS}</style></head>\n"
         f"<body><header><h1>{_esc(title)}</h1><p>{count} · a personal collection of pages that mattered</p></header>\n"
+        f"{toolbar}"
         f"<main>{body}</main>\n"
         f"<footer>Stamps are named by the SHA-256 of the bytes as fetched. "
         f"To check one against the original, run <code>stamp verify &lt;hash&gt;</code>. "

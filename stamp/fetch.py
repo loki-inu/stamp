@@ -172,7 +172,27 @@ class PageMeta:
     title: str | None = None
     description: str | None = None
     image_url: str | None = None
+    icon_url: str | None = None  # the largest raster icon the page links to
     site_name: str | None = None
+
+
+_ICON_RELS = {"icon", "shortcut", "apple-touch-icon", "apple-touch-icon-precomposed"}
+
+
+def _icon_rank(rel: set[str], sizes: str, href: str, mime: str) -> int | None:
+    """How good an icon link is as a stand-in picture; ``None`` if unusable."""
+    if not rel & _ICON_RELS:
+        return None
+    if "svg" in mime or href.lower().split("?")[0].endswith(".svg"):
+        return None  # cannot be embedded as a raster
+    size = 0
+    for m in re.finditer(r"(\d+)x(\d+)", sizes):
+        size = max(size, int(m.group(1)))
+    if "any" in sizes:
+        size = max(size, 512)
+    if "apple-touch-icon" in rel or "apple-touch-icon-precomposed" in rel:
+        size = size or 180  # the de facto default
+    return size
 
 
 class _MetaParser(HTMLParser):
@@ -183,6 +203,7 @@ class _MetaParser(HTMLParser):
         self.title_parts: list[str] = []
         self.meta: dict[str, str] = {}
         self.link_image: str | None = None
+        self.icon: tuple[int, str] | None = None  # (rank, href)
         self.paragraph: str | None = None
         self._in_title = False
         self._skip_depth = 0
@@ -204,10 +225,17 @@ class _MetaParser(HTMLParser):
             content = " ".join((a.get("content") or "").split())
             if key and content and key not in self.meta:
                 self.meta[key] = content
-        elif tag == "link" and self.link_image is None:
+        elif tag == "link":
             a = {k.lower(): v for k, v in attrs}
-            if "image_src" in (a.get("rel") or "").lower().split() and a.get("href"):
-                self.link_image = a["href"].strip()
+            rel = set((a.get("rel") or "").lower().split())
+            href = (a.get("href") or "").strip()
+            if not href:
+                return
+            if "image_src" in rel and self.link_image is None:
+                self.link_image = href
+            rank = _icon_rank(rel, (a.get("sizes") or "").lower(), href, (a.get("type") or "").lower())
+            if rank is not None and (self.icon is None or rank > self.icon[0]):
+                self.icon = (rank, href)
         elif tag == "p" and self.paragraph is None and not self._skip_depth:
             self._p_parts = []
         elif tag == "br" and self._p_parts is not None:
@@ -261,8 +289,8 @@ def _looks_like_html(body: bytes, content_type: str) -> bool:
     return body[:5].lower() in (b"<!doc", b"<html") or b"<title" in head or b"<meta" in head
 
 
-def _decode(body: bytes, content_type: str) -> str:
-    chunk = body[:768 * 1024]
+def _decode(body: bytes, content_type: str, limit: int | None = 768 * 1024) -> str:
+    chunk = body[:limit] if limit else body
     try:
         return chunk.decode(_charset_of(content_type, body), errors="replace")
     except LookupError:
@@ -300,20 +328,93 @@ def extract_meta(body: bytes, content_type: str = "text/html", base_url: str | N
     if description:
         description = _clip(description, DESCRIPTION_MAX)
 
-    image_url = None
-    for candidate in (m.get("og_image_secure"), m.get("og_image"), m.get("tw_image"), parser.link_image):
-        if not candidate or candidate.lower().startswith("data:"):
-            continue
-        absolute = urljoin(base_url, candidate) if base_url else candidate
-        try:
-            image_url = normalize_url(absolute)
-        except URLError:
-            continue
-        break
+    def resolve(*candidates: str | None) -> str | None:
+        for candidate in candidates:
+            if not candidate or candidate.lower().startswith("data:"):
+                continue
+            try:
+                return normalize_url(urljoin(base_url, candidate) if base_url else candidate)
+            except URLError:
+                continue
+        return None
 
-    return PageMeta(title=title or None, description=description or None, image_url=image_url, site_name=m.get("site_name"))
+    image_url = resolve(m.get("og_image_secure"), m.get("og_image"), m.get("tw_image"), parser.link_image)
+    icon_url = resolve(parser.icon[1] if parser.icon else None)
+    return PageMeta(
+        title=title or None,
+        description=description or None,
+        image_url=image_url,
+        icon_url=icon_url,
+        site_name=m.get("site_name"),
+    )
 
 
 def extract_title(body: bytes, content_type: str = "text/html") -> str | None:
     """Best-effort page title from HTML bytes, or ``None``."""
     return extract_meta(body, content_type).title
+
+
+# ---------------------------------------------------------- visible text
+
+_BLOCK_TAGS = frozenset(
+    "p div br li ul ol h1 h2 h3 h4 h5 h6 tr td th table section article header footer nav aside "
+    "blockquote pre dd dt dl figure figcaption hr address main title option".split()
+)
+
+
+class _TextParser(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.lines: list[str] = []
+        self._cur: list[str] = []
+        self._skip = 0
+
+    def _flush(self) -> None:
+        line = " ".join("".join(self._cur).split())
+        self._cur = []
+        if line:
+            self.lines.append(line)
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if tag in ("script", "style", "noscript", "template", "svg"):
+            self._skip += 1
+        elif tag in _BLOCK_TAGS:
+            self._flush()
+
+    def handle_startendtag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if tag in _BLOCK_TAGS:
+            self._flush()
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag in ("script", "style", "noscript", "template", "svg"):
+            self._skip = max(0, self._skip - 1)
+        elif tag in _BLOCK_TAGS:
+            self._flush()
+
+    def handle_data(self, data: str) -> None:
+        if not self._skip:
+            self._cur.append(data)
+
+
+def decode_text(body: bytes, content_type: str = "text/html") -> str:
+    """The whole body as text, using the declared or sniffed charset."""
+    return _decode(body, content_type, limit=None)
+
+
+def visible_text(body: bytes, content_type: str = "text/html") -> str:
+    """The text a reader would see, one block per line.
+
+    For anything that is not HTML the bytes are decoded as they are, so
+    ``stamp diff`` works on plain text and the like too.
+    """
+    text = decode_text(body, content_type)
+    if not _looks_like_html(body, content_type):
+        return text
+    parser = _TextParser()
+    try:
+        parser.feed(text)
+        parser.close()
+    except Exception:  # noqa: BLE001
+        pass
+    parser._flush()
+    return "\n".join(parser.lines) + "\n"

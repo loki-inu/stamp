@@ -1,4 +1,4 @@
-from stamp.fetch import DESCRIPTION_MAX, extract_meta, extract_title
+from stamp.fetch import DESCRIPTION_MAX, extract_meta, extract_title, visible_text
 
 
 def _page(head: str = "", body: str = "") -> bytes:
@@ -85,6 +85,34 @@ def test_title_and_site_name():
     untitled = b'<html><head><meta property="og:title" content="From OG"></head><body></body></html>'
     assert extract_title(untitled) == "From OG"
     assert extract_title(b"%PDF-1.7 not html at all", "application/pdf") is None
+
+
+def test_icon_url_prefers_the_largest_raster_icon():
+    body = _page(
+        '<link rel="icon" href="/favicon.ico" sizes="16x16 32x32">'
+        '<link rel="icon" type="image/svg+xml" href="/icon.svg">'
+        '<link rel="icon" href="/icon-192.png" sizes="192x192">'
+        '<link rel="apple-touch-icon" href="/apple.png">'
+    )
+    m = extract_meta(body, base_url="https://site.example/x/")
+    assert m.icon_url == "https://site.example/icon-192.png"
+    assert m.image_url is None
+
+    touch_only = extract_meta(_page('<link rel="apple-touch-icon" href="touch.png">'), base_url="https://site.example/a/")
+    assert touch_only.icon_url == "https://site.example/a/touch.png"
+    svg_only = extract_meta(_page('<link rel="icon" type="image/svg+xml" href="/icon.svg">'), base_url="https://site.example/")
+    assert svg_only.icon_url is None
+    assert extract_meta(_page()).icon_url is None
+
+
+def test_visible_text_reads_like_the_page():
+    body = _page(
+        "<style>p{color:red}</style>",
+        "<h1>Heading</h1><p>First <b>bold</b> paragraph.</p><script>var x = 1;</script>"
+        "<ul><li>one</li><li>two</li></ul><div>tail</div>",
+    )
+    assert visible_text(body) == "T\nHeading\nFirst bold paragraph.\none\ntwo\ntail\n"
+    assert visible_text(b"just some text\n", "text/plain") == "just some text\n"
 
 
 def test_malformed_markup_does_not_raise():
