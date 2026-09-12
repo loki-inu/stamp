@@ -6,7 +6,8 @@
 prints a small postage stamp for it. The stamp is laid out like an identity
 card for the page: the host and a FILED chip across the top, the page's own
 preview picture, its title in large type, a few lines about what it is, then
-date, short hash, size and album number beside a QR code that carries the
+a receipt of the fetch: time, type, bytes and album number as line items,
+with the date and short hash as the total, beside a QR code that carries the
 full hash. Stamps collect in a local album. When you have a few, print a
 sheet of eight and cut along the perforations.
 
@@ -71,7 +72,7 @@ Open `sheet.svg` in a browser and print it; open `album.html` to browse the
 collection. Both are plain files that work from `file://` with no server.
 
 <p align="center">
-  <img src="docs/example-stamp.svg" alt="One stamp for peps.python.org: the Python logo in olive ink, the title PEP 20 – The Zen of Python, a two-line description, the date, a short hash, the size, the album number and a QR code" width="300">
+  <img src="docs/example-stamp.svg" alt="One stamp for peps.python.org: the Python logo in olive ink, the title PEP 20 – The Zen of Python, a three-line description, a receipt of time, type, bytes and number, the date and short hash in bold, and a QR code" width="300">
   &nbsp;&nbsp;
   <img src="docs/example-stamp-no-preview.svg" alt="One stamp for rfc-editor.org, a page with no title or picture: an empty ruled photo slot with a large R monogram and a NO PREVIEW tag, the URL in place of a title" width="300">
 </p>
@@ -135,13 +136,14 @@ layout is fixed, like a card, so the eye knows where to find things.
 - **Title** of the page in large type, or the URL when a page has no title.
 - **About**: two or three lines from `og:description`, the meta description,
   or the first real paragraph of the page; failing all of those, the address.
-- **Date** the page was fetched, `YYYY-MM-DD`, in UTC; the **SHA-256** short
-  hash (first twelve hex digits); the **size** of the page; and the stamp's
-  **number** in your album.
+- Below a serrated tear line, the **receipt**: line items with dotted
+  leaders for the time of the fetch (UTC), the content type and HTTP status,
+  the exact byte count and the stamp's **number** in your album; then a rule
+  and the total row, the **date** (`YYYY-MM-DD`, UTC) and the **SHA-256**
+  short hash (first twelve hex digits), in bold.
 - **QR code** encoding `stamp:sha256:<full hash>`, so a printed stamp can be
   looked up again.
-- A **footer bar** with the address and a hash-derived set of bars, and a
-  dashed tear line above the grid, as on a receipt.
+- A **footer bar** with the address and a hash-derived set of bars.
 
 Stamps are SVG, so they scale to any size and print crisply. The only raster
 in one is the preview picture, embedded as a small JPEG so the stamp is a
