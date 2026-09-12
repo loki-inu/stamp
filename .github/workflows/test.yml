@@ -1,0 +1,54 @@
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  PYTHONUTF8: "1"
+
+jobs:
+  pytest:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest]
+        python: ["3.11", "3.12", "3.13"]
+        extras: ["dev", "bare"]
+        include:
+          - os: macos-latest
+            python: "3.12"
+            extras: dev
+          - os: windows-latest
+            python: "3.12"
+            extras: dev
+    name: py${{ matrix.python }} · ${{ matrix.extras }} · ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Install
+        shell: bash
+        run: |
+          python -m pip install --upgrade pip
+          if [ "${{ matrix.extras }}" = "dev" ]; then
+            # Everything, Pillow included: previews are shrunk.
+            python -m pip install -e '.[dev]'
+          else
+            # Standard library only: previews fall back, tests that need Pillow skip.
+            python -m pip install -e . pytest
+          fi
+      - name: Test
+        run: python -m pytest -q -rs
+      - name: Smoke the CLI
+        shell: bash
+        env:
+          STAMP_HOME: ${{ runner.temp }}/album
+        run: |
+          stamp --version
+          stamp list
+          stamp album
+          test -f "$STAMP_HOME/album.html"

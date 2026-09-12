@@ -1,4 +1,5 @@
 import json
+import sys
 import threading
 import urllib.error
 import urllib.request
@@ -136,6 +137,7 @@ def test_refuses_other_hosts(server):
     assert status == 200
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows lets a second socket bind an in-use port")
 def test_cli_serve_reports_a_busy_port(server, album, capsys):
     from stamp import cli
 
