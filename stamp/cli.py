@@ -1,17 +1,17 @@
-"""Command line: ``stamp add | list | show | verify | sheet | album | redraw``."""
+"""Command line: ``stamp add | list | show | verify | sheet | album | diff | redraw | serve``."""
 
 from __future__ import annotations
 
 import argparse
+import difflib
 import sys
-import urllib.error
 from pathlib import Path
 
-from . import __version__, preview as preview_mod
-from .fetch import URLError, extract_meta, fetch, fetch_preview, normalize_url
-from .preview import Preview
-from .store import Album, Ambiguous, NotFound, StampError
-from .svg import PAPER_SIZES_MM, render_album, render_sheet
+from . import __version__
+from .actions import FetchFailed, stamp_url
+from .fetch import URLError, decode_text, visible_text
+from .store import Album, Ambiguous, NotFound, Stamp, StampError
+from .svg import PAPER_SIZES_MM, render_album, render_sheet, render_sheet_page
 
 
 def _say(*parts: object) -> None:
@@ -26,64 +26,29 @@ def _err(msg: str) -> None:
 
 def cmd_add(album: Album, args: argparse.Namespace) -> int:
     try:
-        url = normalize_url(args.url)
+        got = stamp_url(
+            album,
+            args.url,
+            title=args.title,
+            description=args.description,
+            want_preview=not args.no_preview,
+            timeout=args.timeout,
+        )
     except URLError as e:
         _err(str(e))
         return 2
-    try:
-        got = fetch(url, timeout=args.timeout)
-    except urllib.error.HTTPError as e:
-        _err(f"{url} answered {e.code} {e.reason}")
+    except FetchFailed as e:
+        _err(str(e))
         return 1
-    except urllib.error.URLError as e:
-        _err(f"could not fetch {url}: {e.reason}")
-        return 1
-    except (URLError, TimeoutError, OSError, ValueError) as e:
-        _err(f"could not fetch {url}: {e}")
-        return 1
-
-    meta = extract_meta(got.body, got.content_type, got.final_url or url)
-    title = args.title or meta.title
-    description = args.description or meta.description
-
-    preview: Preview | None = None
-    if meta.image_url and not args.no_preview and not album.has(got.body):
-        preview = _get_preview(meta.image_url, timeout=min(args.timeout, 20))
-
-    stamp, created = album.add(
-        url,
-        got.body,
-        content_type=got.content_type,
-        title=title,
-        requested_url=args.url if args.url != url else None,
-        final_url=got.final_url,
-        status=got.status,
-        description=description,
-        preview=preview,
-        preview_source=meta.image_url,
-    )
-    if created:
+    for note in got.notes:
+        _err(note)
+    stamp = got.stamp
+    if got.created:
         _say(f"stamped  {stamp.short}  {stamp.label}")
-        _say(f"         {album.svg_path(stamp.sha256)}")
-        if meta.image_url and not args.no_preview and preview is None:
-            _say("         (no usable preview picture; the stamp shows an empty slot)")
     else:
         _say(f"already in the album as {stamp.short} (same bytes, {stamp.date})")
-        _say(f"         {album.svg_path(stamp.sha256)}")
+    _say(f"         {album.svg_path(stamp.sha256)}")
     return 0
-
-
-def _get_preview(image_url: str, timeout: float) -> Preview | None:
-    """Fetch and shrink a page's picture; any failure means no picture."""
-    try:
-        data, content_type = fetch_preview(image_url, timeout=timeout)
-    except Exception as e:  # noqa: BLE001 - the picture is a nicety, the stamp is the point
-        _err(f"preview not fetched from {image_url}: {getattr(e, 'reason', e)}")
-        return None
-    got = preview_mod.prepare(data, content_type)
-    if got is None and not preview_mod.HAVE_PIL:
-        _err("preview skipped: install Pillow (pip install 'stamp-philately[preview]') to shrink large pictures")
-    return got
 
 
 def cmd_list(album: Album, args: argparse.Namespace) -> int:
@@ -146,10 +111,58 @@ def cmd_sheet(album: Album, args: argparse.Namespace) -> int:
     out.parent.mkdir(parents=True, exist_ok=True)
     stamps = stamps[:8]
     previews = {s.sha256: p for s in stamps if (p := album.load_preview(s)) is not None}
-    out.write_text(render_sheet(stamps, paper=args.paper, title=args.title, previews=previews), encoding="utf-8")
+    svg = render_sheet(stamps, paper=args.paper, title=args.title, previews=previews)
+    out.write_text(svg, encoding="utf-8")
+    page = out.with_suffix(".html")
+    page.write_text(render_sheet_page(svg, paper=args.paper, title=args.title, count=len(stamps)), encoding="utf-8")
     n = len(stamps)
     _say(f"sheet of {n} stamp{'s' if n != 1 else ''} ({args.paper.upper()}, landscape) -> {out}")
+    _say(f"print-ready page                          -> {page}")
     return 0
+
+
+def cmd_diff(album: Album, args: argparse.Namespace) -> int:
+    new = album.find(args.hashes[0])
+    if len(args.hashes) > 1:
+        old = album.find(args.hashes[1])
+    else:
+        earlier = [s for s in album.stamps() if s.url == new.url and _order(s) < _order(new)]
+        if not earlier:
+            _err(f"no earlier stamp of {new.url} to compare {new.short} with")
+            return 2
+        old = earlier[0]  # stamps() is newest first, so this is the one just before
+    if _order(old) > _order(new):
+        old, new = new, old
+
+    def lines(s: Stamp) -> list[str]:
+        body = album.read_bytes(s)
+        text = visible_text(body, s.content_type) if args.text else decode_text(body, s.content_type)
+        return text.splitlines(keepends=True)
+
+    a, b = lines(old), lines(new)
+    out = list(
+        difflib.unified_diff(a, b, fromfile=f"{old.short}  {old.fetched_at}  {old.url}", tofile=f"{new.short}  {new.fetched_at}  {new.url}", n=args.context)
+    )
+    for line in out:
+        sys.stdout.write(line if line.endswith("\n") else line + "\n")
+    added = sum(1 for l in out[2:] if l.startswith("+"))
+    removed = sum(1 for l in out[2:] if l.startswith("-"))
+    what = "visible text" if args.text else "bytes"
+    if not out:
+        _say(f"same {what}: {old.short} ({old.date}) and {new.short} ({new.date})")
+        return 0
+    _say(f"--- {added} line{'s' if added != 1 else ''} added, {removed} removed ({what}) between {old.short} ({old.date}) and {new.short} ({new.date})")
+    return 1
+
+
+def _order(s: Stamp) -> tuple[str, int]:
+    return (s.fetched_at, s.number)
+
+
+def cmd_serve(album: Album, args: argparse.Namespace) -> int:
+    from .serve import serve
+
+    return serve(album, port=args.port, open_browser=args.open, timeout=args.timeout)
 
 
 def cmd_redraw(album: Album, args: argparse.Namespace) -> int:
@@ -219,6 +232,18 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--out", metavar="FILE", help="where to write the page (default: $STAMP_HOME/album.html)")
     p.add_argument("--title", default="Stamp album", help="page title")
     p.set_defaults(func=cmd_album)
+
+    p = sub.add_parser("diff", help="what changed between two stamps of a page; exit 1 when they differ")
+    p.add_argument("hashes", nargs="+", metavar="hash", help="a stamp, or two; one stamp is compared with the previous stamp of the same URL")
+    p.add_argument("--text", action="store_true", help="compare the visible text rather than the raw bytes")
+    p.add_argument("-U", "--context", type=int, default=2, metavar="N", help="lines of context (default 2)")
+    p.set_defaults(func=cmd_diff)
+
+    p = sub.add_parser("serve", help="open the album in a browser and stamp pages with one click")
+    p.add_argument("--port", type=int, default=7878, help="port on 127.0.0.1 (default 7878)")
+    p.add_argument("--open", action="store_true", help="open the album page in your browser")
+    p.add_argument("--timeout", type=float, default=30, help="seconds to wait for a page (default 30)")
+    p.set_defaults(func=cmd_serve)
 
     p = sub.add_parser("redraw", help="draw stamps again in the current design; bytes and metadata stay put")
     p.add_argument("hashes", nargs="*", metavar="hash", help="specific stamps to redraw (default: all)")

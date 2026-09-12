@@ -2,7 +2,7 @@ import urllib.error
 
 import pytest
 
-from stamp import cli
+from stamp import actions, cli
 from stamp.fetch import Fetched
 from tests.conftest import PAGE
 
@@ -29,7 +29,7 @@ def fake_fetch(monkeypatch):
             body = PAGE if "other" not in url else PAGE.replace(b"hello", b"goodbye")
         return Fetched(requested_url=url, final_url=url, status=200, content_type="text/html; charset=utf-8", body=body)
 
-    monkeypatch.setattr(cli, "fetch", _fetch)
+    monkeypatch.setattr(actions, "fetch", _fetch)
     return calls
 
 
@@ -46,7 +46,7 @@ def fake_preview(monkeypatch):
             raise urllib.error.URLError("connection refused")
         return tiny_png(600, 340), "image/png"
 
-    monkeypatch.setattr(cli, "fetch_preview", _fetch_preview)
+    monkeypatch.setattr(actions, "fetch_preview", _fetch_preview)
     return state
 
 
@@ -166,8 +166,8 @@ def test_add_survives_a_broken_preview(album, fake_fetch, fake_preview, capsys):
     assert cli.main(["add", "https://example.com/rich"]) == 0
     out, err = capsys.readouterr()
     assert out.startswith("stamped")
-    assert "no usable preview" in out
-    assert "preview not fetched" in err
+    assert "no usable preview" in err
+    assert "image not fetched" in err
     (stamp,) = album.stamps()
     assert stamp.preview is None and stamp.preview_source is None
     assert stamp.description == "Words the page uses about itself."
@@ -230,6 +230,72 @@ def test_redraw(album, fake_fetch, fake_preview, capsys):
     assert cli.main(["redraw", rich.short[:6]]) == 0
     assert capsys.readouterr().out.count("redrawn") == 1
     assert cli.main(["redraw", "deadbeef"]) == 2
+
+
+ICON_PAGE = (
+    b"<!doctype html><html><head><title>Icon only</title>"
+    b'<link rel="apple-touch-icon" href="/apple-touch-icon.png">'
+    b"</head><body><p>hello</p></body></html>"
+)
+
+
+def test_add_falls_back_to_the_site_icon(album, fake_fetch, fake_preview, monkeypatch):
+    monkeypatch.setattr(actions, "fetch", lambda url, timeout=30: Fetched(url, url, 200, "text/html", ICON_PAGE))
+    assert cli.main(["add", "https://example.com/icon"]) == 0
+    assert fake_preview["calls"] == ["https://example.com/apple-touch-icon.png"]
+    (stamp,) = album.stamps()
+    assert stamp.preview_kind == "icon" and stamp.preview is not None
+    svg = album.svg_path(stamp.sha256).read_text()
+    assert "SITE ICON" in svg and "data:image/" in svg and "NO PREVIEW" not in svg
+
+
+def test_sheet_writes_a_print_page_too(album, fake_fetch, tmp_path, capsys):
+    cli.main(["add", "https://example.com/"])
+    out = tmp_path / "issue.svg"
+    assert cli.main(["sheet", "--out", str(out), "--paper", "letter", "--title", "Summer"]) == 0
+    page = tmp_path / "issue.html"
+    assert page.is_file() and str(page) in capsys.readouterr().out
+    html = page.read_text()
+    assert "@page { size: 279.4mm 215.9mm" in html and "SUMMER" in html and "<svg" in html and "<?xml" not in html
+    assert cli.main(["sheet"]) == 0
+    assert (album.home / "sheet.html").is_file()
+
+
+def test_diff_between_two_stamps_of_a_page(album, fake_fetch, capsys):
+    assert cli.main(["add", "https://example.com/"]) == 0
+    # The same page again, with different bytes: a second stamp of the same URL.
+    fake_fetch.clear()
+    from stamp import actions as act
+
+    changed = PAGE.replace(b"hello", b"goodbye <script>x=1</script>")
+    act_fetch = act.fetch
+    act.fetch = lambda url, timeout=30: Fetched(url, url, 200, "text/html; charset=utf-8", changed)
+    try:
+        assert cli.main(["add", "https://example.com/"]) == 0
+    finally:
+        act.fetch = act_fetch
+    new, old = album.stamps()
+    assert new.url == old.url and new.sha256 != old.sha256
+    capsys.readouterr()
+
+    assert cli.main(["diff", new.short]) == 1
+    out = capsys.readouterr().out
+    assert out.startswith(f"--- {old.short}") and f"\n+++ {new.short}" in out
+    assert "\n- that mattered </title></head><body>hello" in out and "<body>goodbye" in out
+    assert "1 line added, 1 removed (bytes)" in out
+
+    assert cli.main(["diff", "--text", old.short, new.short]) == 1
+    out = capsys.readouterr().out
+    assert "-hello" in out and "+goodbye" in out and "x=1" not in out
+
+    # Same visible text, different bytes: nothing to show, exit 0.
+    assert cli.main(["diff", "--text", new.short, new.short]) == 0
+    assert "same visible text" in capsys.readouterr().out
+
+    # A lone stamp has nothing earlier to compare with.
+    other, _ = album.add("https://elsewhere.example/", b"<p>alone</p>", fetched_at="2026-01-01T00:00:00Z")
+    assert cli.main(["diff", other.short]) == 2
+    assert "no earlier stamp" in capsys.readouterr().err
 
 
 def test_module_entry_point():
