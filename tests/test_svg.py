@@ -140,6 +140,26 @@ def test_stamp_without_preview_shows_an_empty_slot_and_the_address():
     assert "site0.example/some/page?id=0" in text  # printed as title and in the footer bar
 
 
+def test_receipt_ledger_lists_the_transaction():
+    s = Stamp(
+        sha256="12" * 32,
+        url="https://x.example/",
+        fetched_at="2026-05-06T07:08:09Z",
+        content_type="text/html; charset=utf-8",
+        status=200,
+        size=1234567,
+        number=42,
+    )
+    text = render_stamp(s)
+    for needle in (">TIME<", ">07:08:09 UTC<", ">TYPE<", ">text/html · 200<", ">BYTES<", ">1,234,567<", ">NO.<", ">042<", ">DATE<", ">2026-05-06<", ">SHA-256<", f">{s.short}<"):
+        assert needle in text, needle
+    # Nothing known about the fetch: no time, no status, a dash for the number.
+    bare = Stamp(sha256="34" * 32, url="https://x.example/", fetched_at="2026-05-06")
+    text = render_stamp(bare)
+    ET.fromstring(text)
+    assert ">TIME<" not in text and ">application/octet-stream<" in text and ">—<" in text
+
+
 def test_stamp_from_old_metadata_renders(tmp_path):
     old = Stamp(sha256="ef" * 32, url="https://old.example/", fetched_at="2025-01-01T00:00:00Z", title="Old", format=1)
     text = render_stamp(old)

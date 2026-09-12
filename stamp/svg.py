@@ -32,7 +32,7 @@ MONO = "'SF Mono',Menlo,Consolas,'Liberation Mono','DejaVu Sans Mono',monospace"
 
 # The preview panel. Its shape matches preview.PREVIEW_W × PREVIEW_H.
 PANEL = (MARGIN, 60, W - 2 * MARGIN, 139)
-QR_SIZE = 64
+QR_SIZE = 63
 
 PAPER_SIZES_MM = {"a4": (297.0, 210.0), "letter": (279.4, 215.9)}
 MM_TO_PX = 96 / 25.4
@@ -304,6 +304,59 @@ def _footer_bar(stamp: Stamp, ink: str) -> str:
     return "".join(out)
 
 
+def _tear_line(y: float, ink: str) -> str:
+    """A serrated edge across the card, with a notch at either side."""
+    x0, x1 = FRAME, W - FRAME
+    tooth = 3.0
+    n = int((x1 - x0) / tooth)
+    d = [f"M{x0} {_fmt(y + 1)}"]
+    for i in range(n):
+        d.append(f"l{_fmt(tooth / 2)} -2l{_fmt(tooth / 2)} 2")
+    out = [f'<path d="{"".join(d)}" fill="none" stroke="{ink}" stroke-width="0.7" stroke-linejoin="round"/>']
+    for nx in (x0, x1):
+        out.append(f'<circle cx="{nx}" cy="{y}" r="3.2" fill="{PAPER}" stroke="{ink}" stroke-width="1.4"/>')
+    return "".join(out)
+
+
+def _ledger(stamp: Stamp, x0: float, x1: float, y: float, ink: str) -> str:
+    """Receipt line items with dotted leaders, a rule, and the total row.
+
+    The small items are the transaction: time, content type and status,
+    byte count, album number. The total is what a collector reads first:
+    the date and the short hash.
+    """
+    items: list[tuple[str, str]] = []
+    if len(stamp.fetched_at) >= 19 and stamp.fetched_at[10] == "T":
+        items.append(("TIME", f"{stamp.fetched_at[11:19]} UTC"))
+    kind = stamp.content_type.split(";")[0].strip() or "unknown"
+    items.append(("TYPE", f"{kind} · {stamp.status}" if stamp.status else kind))
+    items.append(("BYTES", f"{stamp.size:,}"))
+    items.append(("NO.", f"{stamp.number:03d}" if stamp.number else "—"))
+
+    out = []
+    room = x1 - x0
+    yy = y + 8
+    ry = y + 41  # the rule above the total row stays put however many items there are
+    for label, value in items:
+        value = shorten(value, max(6, int((room - 6.2 * len(label) - 14) / 4.45)))
+        out.append(_label(x0, yy, label, ink))
+        out.append(_text(x1, yy, value, 7.4, MONO, ink, anchor="end", opacity=0.92))
+        lx0 = x0 + 5.1 * len(label) + 5
+        lx1 = x1 - 4.45 * len(value) - 5
+        if lx1 - lx0 > 6:
+            out.append(
+                f'<line x1="{_fmt(lx0)}" y1="{_fmt(yy - 1.6)}" x2="{_fmt(lx1)}" y2="{_fmt(yy - 1.6)}" '
+                f'stroke="{ink}" stroke-width="0.7" stroke-dasharray="0.7 1.9" opacity="0.55"/>'
+            )
+        yy += 9.5
+    out.append(f'<line x1="{x0}" y1="{_fmt(ry)}" x2="{x1}" y2="{_fmt(ry)}" stroke="{ink}" stroke-width="0.8" stroke-dasharray="2.2 1.8"/>')
+    out.append(_label(x0, ry + 9, "DATE", ink))
+    out.append(_text(x1, ry + 9, "SHA-256", 6.2, MONO, ink, weight="600", anchor="end", spacing=1.5, opacity=0.72))
+    out.append(_text(x0, ry + 20.5, stamp.date, 11, MONO, ink, weight="700", spacing=0.3))
+    out.append(_text(x1, ry + 20.5, stamp.short, 11, MONO, ink, weight="700", anchor="end", spacing=0.3))
+    return "".join(out)
+
+
 # ------------------------------------------------------------- the stamp
 
 def stamp_body(stamp: Stamp, prefix: str = "s", preview: Preview | None = None) -> str:
@@ -363,43 +416,23 @@ def stamp_body(stamp: Stamp, prefix: str = "s", preview: Preview | None = None) 
         ty += 18
 
     # About: what the page says about itself, or its address.
-    ay = py + ph + 60
+    ay = py + ph + 58
     out.append(_label(left, ay, "ABOUT", ink))
     out.append(f'<line x1="{left + 34}" y1="{ay - 2.4}" x2="{right}" y2="{ay - 2.4}" stroke="{ink}" stroke-width="0.5" opacity="0.5"/>')
     if stamp.description:
         lines = wrap_title(stamp.about, max_chars=60, max_lines=3)
         for i, line in enumerate(lines):
-            out.append(_text(left, ay + 12 + i * 11.5, line, 9.2, SERIF, ink))
+            out.append(_text(left, ay + 12 + i * 11, line, 9.2, SERIF, ink))
     else:
         for i, line in enumerate(wrap_title(stamp.about, max_chars=48, max_lines=3)):
-            out.append(_text(left, ay + 12 + i * 11.5, line, 8.4, MONO, ink, opacity=0.9))
+            out.append(_text(left, ay + 12 + i * 11, line, 8.4, MONO, ink, opacity=0.9))
 
-    # A tear line, as on a receipt, notched at the card's edge.
-    cy = 300
-    out.append(
-        f'<line x1="{FRAME}" y1="{cy}" x2="{W - FRAME}" y2="{cy}" stroke="{ink}" stroke-width="0.8" stroke-dasharray="3 2.6"/>'
-    )
-    for nx in (FRAME, W - FRAME):
-        out.append(f'<circle cx="{nx}" cy="{cy}" r="3.2" fill="{PAPER}" stroke="{ink}" stroke-width="1.4"/>')
+    # A serrated tear line, as on a till receipt, notched at the card's edge.
+    out.append(_tear_line(298, ink))
 
-    # Footer grid: date, hash, size and number; the QR code alongside.
-    qx, qy = right - QR_SIZE, 306
-    gx0, gx1, gx2 = left, 109, qx - 12
-    gy0, gy1, gy2 = 308, 337, 366
-    out.append(
-        f'<path d="M{gx0} {gy1}H{gx2}M{gx1 - 8} {gy0}V{gy2}M{gx2} {gy0}V{gy2}" fill="none" stroke="{ink}" '
-        f'stroke-width="0.5" opacity="0.5"/>'
-    )
-    number = f"{stamp.number:03d}" if stamp.number else "—"
-    cells = (
-        (gx0, gy0, "DATE", stamp.date),
-        (gx1, gy0, "SHA-256", stamp.short),
-        (gx0, gy1, "SIZE", human_size(stamp.size)),
-        (gx1, gy1, "NO.", number),
-    )
-    for cx, cy0, label, value in cells:
-        out.append(_label(cx, cy0 + 8.5, label, ink))
-        out.append(_text(cx, cy0 + 22.5, value, 11.5, MONO, ink, weight="700", spacing=0.3))
+    # The receipt: line items with leaders, a rule, and the total row.
+    qx, qy = right - QR_SIZE, 305
+    out.append(_ledger(stamp, left, qx - 12, 305, ink))
     out.append(_qr_svg(stamp.qr_payload, p, qx, qy, QR_SIZE, ink))
 
     out.append(_footer_bar(stamp, ink))
