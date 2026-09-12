@@ -3,6 +3,7 @@ import json
 
 import pytest
 
+from stamp.preview import Preview
 from stamp.store import Album, Ambiguous, NotFound, Stamp, sha256_hex
 from tests.conftest import PAGE
 
@@ -94,3 +95,77 @@ def test_empty_album(tmp_path):
     assert a.stamps() == []
     with pytest.raises(NotFound):
         a.find("abcd")
+
+
+def test_preview_and_description_are_filed_with_the_stamp(album):
+    from tests.test_preview import tiny_png
+
+    png = tiny_png(8, 8)
+    stamp, created = album.add(
+        "https://pictures.example/",
+        PAGE,
+        title="With a picture",
+        description="A page that came with a picture and a few words about itself.",
+        preview=Preview(data=png, mime="image/png", width=8, height=8),
+        preview_source="https://pictures.example/og.png",
+    )
+    assert created
+    assert stamp.preview == f"{stamp.sha256}.preview.png"
+    path = album.preview_path(stamp)
+    assert path is not None and path.read_bytes() == png
+    loaded = album.load_preview(stamp)
+    assert loaded is not None and loaded.mime == "image/png" and loaded.data == png
+
+    meta = json.loads(album.meta_path(stamp.sha256).read_text())
+    assert meta["format"] == 2
+    assert meta["description"].startswith("A page that came")
+    assert meta["preview_source"] == "https://pictures.example/og.png"
+    svg = album.svg_path(stamp.sha256).read_text()
+    assert "data:image/png;base64," in svg
+    assert "A page that came with a picture" in svg
+    assert album.verify(stamp)
+
+
+def test_stamps_without_a_preview_have_none(album, stamped):
+    assert stamped.preview is None and stamped.description is None
+    assert album.preview_path(stamped) is None
+    assert album.load_preview(stamped) is None
+    assert "NO PREVIEW" in album.svg_path(stamped.sha256).read_text()
+
+
+def test_preview_path_never_leaves_the_stamps_directory(album, stamped):
+    for bad in ("../objects/x", "/etc/passwd", ".hidden"):
+        stamped.preview = bad
+        assert album.preview_path(stamped) is None
+        assert album.load_preview(stamped) is None
+
+
+def test_old_format_stamps_still_read_and_redraw(album):
+    """Metadata written by 0.1 has no description or preview fields."""
+    album.ensure()
+    digest = sha256_hex(PAGE)
+    album.object_path(digest).write_bytes(PAGE)
+    old = {
+        "sha256": digest,
+        "url": "https://old.example/page",
+        "fetched_at": "2025-12-31T23:59:59Z",
+        "title": "An old stamp",
+        "content_type": "text/html",
+        "size": len(PAGE),
+        "requested_url": None,
+        "final_url": None,
+        "status": 200,
+        "number": 7,
+        "format": 1,
+    }
+    album.meta_path(digest).write_text(json.dumps(old))
+    s = album.get(digest)
+    assert s.format == 1 and s.description is None and s.preview is None
+    assert s.about == "old.example/page"
+    assert album.verify(s)
+    path = album.redraw(s)
+    svg = path.read_text()
+    assert svg.startswith("<?xml") and "NO PREVIEW" in svg and "An old stamp" in svg and digest in svg
+    # Redrawing changes only the picture: metadata and bytes are untouched.
+    assert json.loads(album.meta_path(digest).read_text()) == old
+    assert album.object_path(digest).read_bytes() == PAGE

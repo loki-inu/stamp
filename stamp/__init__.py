@@ -4,4 +4,4 @@
 content-addressed name, and prints a small SVG stamp for the album.
 """
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"

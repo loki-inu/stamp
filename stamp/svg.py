@@ -1,28 +1,38 @@
 """Drawing stamps, sheets of stamps, and the album page.
 
-Everything here is plain SVG text. Each stamp is engraved in a single ink
-colour chosen from its hash, in the manner of classic definitive issues,
-and carries a small landscape that is likewise drawn from the hash. No two
-pages get the same picture.
+Everything here is plain SVG text. A stamp is laid out like an identity
+card crossed with a till receipt: the issuing host and a FILED chip along
+the top, the page's own preview picture in a panel, its title in large
+type, a few lines about it, then a grid of date, hash, size and number
+beside a QR code, and a solid footer bar carrying the address. Each stamp
+is printed in a single ink chosen from its hash; the picture is printed in
+that ink too, as a duotone.
 """
 
 from __future__ import annotations
 
+import base64
 import colorsys
-import math
 from datetime import datetime, timezone
 from html import escape
 from typing import Iterable, Sequence
 
 from . import __version__, qr
+from .preview import Preview
 from .store import Stamp
 
 # Stamp geometry, in user units.
-W, H = 300, 380
+W, H = 300, 400
 PERF_R = 5.4
+FRAME = 15  # inset of the card's rule from the perforated edge
+MARGIN = 27  # inset of the content
 PAPER = "#fbf8f1"
 SERIF = "'Iowan Old Style','Palatino Linotype',Palatino,'Book Antiqua',Georgia,'Times New Roman',serif"
 MONO = "'SF Mono',Menlo,Consolas,'Liberation Mono','DejaVu Sans Mono',monospace"
+
+# The preview panel. Its shape matches preview.PREVIEW_W × PREVIEW_H.
+PANEL = (MARGIN, 60, W - 2 * MARGIN, 139)
+QR_SIZE = 63
 
 PAPER_SIZES_MM = {"a4": (297.0, 210.0), "letter": (279.4, 215.9)}
 MM_TO_PX = 96 / 25.4
@@ -34,8 +44,8 @@ def ink_for(sha256: str) -> dict[str, str]:
     """A single printing ink and its tints, derived from the hash."""
     b = bytes.fromhex(sha256[:16])
     hue = b[0] / 255
-    sat = 0.38 + (b[1] / 255) * 0.32
-    light = 0.20 + (b[2] / 255) * 0.08
+    sat = 0.30 + (b[1] / 255) * 0.32
+    light = 0.18 + (b[2] / 255) * 0.08
 
     def hexcolor(h: float, s: float, light_: float) -> str:
         r, g, bl = colorsys.hls_to_rgb(h, light_, s)
@@ -45,8 +55,12 @@ def ink_for(sha256: str) -> dict[str, str]:
         "ink": hexcolor(hue, sat, light),
         "mid": hexcolor(hue, sat * 0.9, 0.48),
         "tint": hexcolor(hue, sat * 0.8, 0.80),
-        "wash": hexcolor(hue, sat * 0.6, 0.93),
+        "wash": hexcolor(hue, sat * 0.6, 0.94),
     }
+
+
+def _rgb(hexcolor: str) -> tuple[float, float, float]:
+    return tuple(int(hexcolor[i:i + 2], 16) / 255 for i in (1, 3, 5))  # type: ignore[return-value]
 
 
 # -------------------------------------------------------------- utilities
@@ -67,17 +81,50 @@ def human_size(n: int) -> str:
     return f"{n / (1024 * 1024):.1f} MB"
 
 
+def shorten(text: str, max_chars: int) -> str:
+    """Cut ``text`` to ``max_chars`` with an ellipsis."""
+    if len(text) <= max_chars:
+        return text
+    return text[: max(1, max_chars - 1)].rstrip(" ,.;:-/") + "…"
+
+
+_BREAK_AFTER = ("/", "?&=", "-_", ".,;:")
+
+
+def _split_long(word: str, max_chars: int) -> list[tuple[str, bool]]:
+    """Cut an unbroken run (a URL, mostly) into pieces of at most ``max_chars``.
+
+    Cuts fall after a slash where there is one, else after other
+    punctuation, else wherever the line ends. Each piece is flagged with
+    whether it continues the previous one without a space.
+    """
+    pieces: list[tuple[str, bool]] = []
+    rest = word
+    while len(rest) > max_chars:
+        cut = 0
+        for chars in _BREAK_AFTER:
+            cut = max(rest.rfind(c, 1, max_chars) + 1 for c in chars)
+            if cut >= max_chars // 3:
+                break
+        if cut < max_chars // 3:
+            cut = max_chars
+        pieces.append((rest[:cut], bool(pieces)))
+        rest = rest[cut:]
+    if rest:
+        pieces.append((rest, bool(pieces)))
+    return pieces
+
+
 def wrap_title(text: str, max_chars: int = 36, max_lines: int = 2) -> list[str]:
-    """Greedy word wrap with an ellipsis when the title will not fit."""
-    words: list[str] = []
+    """Greedy word wrap with an ellipsis when the text will not fit."""
+    words: list[tuple[str, bool]] = []
     for w in text.split():
-        # Unbroken runs (URLs, mostly) are cut into line-sized pieces.
-        words.extend(w[i:i + max_chars] for i in range(0, len(w), max_chars))
+        words.extend(_split_long(w, max_chars))
     lines: list[str] = []
     cur = ""
     truncated = False
-    for i, w in enumerate(words):
-        candidate = f"{cur} {w}".strip()
+    for w, glued in words:
+        candidate = f"{cur}{w}" if glued else f"{cur} {w}".strip()
         if len(candidate) <= max_chars:
             cur = candidate
             continue
@@ -111,93 +158,40 @@ def _perforations(w: float, h: float) -> list[tuple[float, float]]:
     return pts
 
 
-# --------------------------------------------------------------- the art
+def _text(
+    x: float,
+    y: float,
+    s: str,
+    size: float,
+    family: str = MONO,
+    fill: str = "#000",
+    *,
+    weight: str | None = None,
+    style: str | None = None,
+    anchor: str | None = None,
+    spacing: float | None = None,
+    opacity: float | None = None,
+) -> str:
+    attrs = [f'x="{_fmt(x)}"', f'y="{_fmt(y)}"', f'font-family="{family}"', f'font-size="{_fmt(size)}"', f'fill="{fill}"']
+    if weight:
+        attrs.append(f'font-weight="{weight}"')
+    if style:
+        attrs.append(f'font-style="{style}"')
+    if anchor:
+        attrs.append(f'text-anchor="{anchor}"')
+    if spacing is not None:
+        attrs.append(f'letter-spacing="{_fmt(spacing)}"')
+    if opacity is not None:
+        attrs.append(f'opacity="{_fmt(opacity)}"')
+    return f'<text {" ".join(attrs)}>{_esc(s)}</text>'
 
-def _landscape(sha256: str, p: str, x: float, y: float, w: float, h: float, pal: dict[str, str]) -> str:
-    """A small engraved landscape whose every shape comes from the hash."""
-    b = bytes.fromhex(sha256)
-    ink, mid, tint, wash = pal["ink"], pal["mid"], pal["tint"], pal["wash"]
-    out = [f'<g clip-path="url(#{p}-art)">']
-    out.append(f'<rect x="{x}" y="{y}" width="{w}" height="{h}" fill="{wash}"/>')
 
-    # Sky: engraved horizontal hatching that opens up towards the horizon.
-    horizon = y + h * (0.50 + (b[3] / 255) * 0.18)
-    yy = y + 3
-    step = 2.4
-    while yy < horizon - 4:
-        t = (yy - y) / (horizon - y)
-        out.append(
-            f'<line x1="{x}" y1="{_fmt(yy)}" x2="{x + w}" y2="{_fmt(yy)}" '
-            f'stroke="{ink}" stroke-width="0.5" opacity="{_fmt(0.34 * (1 - t) ** 1.6 + 0.03)}"/>'
-        )
-        yy += step
-        step += 0.22
+def _label(x: float, y: float, s: str, ink: str) -> str:
+    """A tiny field label in the manner of an identity card."""
+    return _text(x, y, s, 6.2, MONO, ink, weight="600", spacing=1.5, opacity=0.72)
 
-    # A sun or moon, with a halo of engraved rings.
-    sun_x = x + w * (0.18 + (b[4] / 255) * 0.64)
-    sun_y = y + (horizon - y) * (0.22 + (b[5] / 255) * 0.45)
-    sun_r = 9 + (b[6] / 255) * 9
-    for k, op in ((3.2, 0.10), (2.2, 0.16), (1.5, 0.24)):
-        out.append(
-            f'<circle cx="{_fmt(sun_x)}" cy="{_fmt(sun_y)}" r="{_fmt(sun_r * k)}" '
-            f'fill="none" stroke="{ink}" stroke-width="0.6" opacity="{op}"/>'
-        )
-    out.append(
-        f'<circle cx="{_fmt(sun_x)}" cy="{_fmt(sun_y)}" r="{_fmt(sun_r)}" fill="{PAPER}" '
-        f'stroke="{ink}" stroke-width="1.1"/>'
-    )
-    out.append(
-        f'<circle cx="{_fmt(sun_x)}" cy="{_fmt(sun_y)}" r="{_fmt(sun_r * 0.55)}" fill="none" '
-        f'stroke="{ink}" stroke-width="0.5" opacity="0.5"/>'
-    )
 
-    # Birds.
-    for i in range(b[7] % 4):
-        bx = x + w * (0.1 + (b[8 + i] / 255) * 0.8)
-        by = y + (horizon - y) * (0.15 + (b[12 + i] / 255) * 0.5)
-        s = 3 + (b[16 + i] % 3)
-        out.append(
-            f'<path d="M{_fmt(bx - s)} {_fmt(by)} q{_fmt(s / 2)} {_fmt(-s * 0.7)} {_fmt(s)} 0 '
-            f'q{_fmt(s / 2)} {_fmt(-s * 0.7)} {_fmt(s)} 0" fill="none" stroke="{ink}" '
-            f'stroke-width="0.9" stroke-linecap="round"/>'
-        )
-
-    # Ridges, far to near, in deepening tints.
-    layers = 4
-    fills = (tint, mid, ink, ink)
-    opacities = (0.55, 0.75, 0.86, 1.0)
-    for li in range(layers):
-        base = horizon + (y + h - horizon) * (li / layers) * 0.9
-        amp = (h * 0.06) + (h * 0.16) * (1 - li / layers)
-        seed = b[16 + li * 4: 20 + li * 4]
-        n = 5 + seed[0] % 3
-        pts = []
-        for i in range(n + 1):
-            px = x + w * i / n
-            noise = (seed[(i + 1) % 4] / 255 - 0.5) * 2
-            py = base - amp * (0.5 + 0.5 * math.sin(i * 1.7 + seed[3] / 40)) - amp * 0.6 * noise
-            pts.append((px, min(max(py, y + 8), y + h)))
-        d = f"M{_fmt(x - 2)} {_fmt(y + h + 2)} L{_fmt(pts[0][0] - 2)} {_fmt(pts[0][1])}"
-        for i in range(len(pts) - 1):
-            (x0, y0), (x1, y1) = pts[i], pts[i + 1]
-            cx = (x0 + x1) / 2
-            d += f" C{_fmt(cx)} {_fmt(y0)} {_fmt(cx)} {_fmt(y1)} {_fmt(x1)} {_fmt(y1)}"
-        d += f" L{_fmt(x + w + 2)} {_fmt(y + h + 2)} Z"
-        out.append(f'<path d="{d}" fill="{fills[li]}" opacity="{opacities[li]}"/>')
-        if li < layers - 1:
-            out.append(f'<path d="{d}" fill="none" stroke="{ink}" stroke-width="0.6" opacity="0.6"/>')
-
-    # Foreground hatching for the near ground.
-    yy = y + h - 2
-    while yy > horizon + (y + h - horizon) * 0.72:
-        out.append(
-            f'<line x1="{x}" y1="{_fmt(yy)}" x2="{x + w}" y2="{_fmt(yy)}" stroke="{PAPER}" '
-            f'stroke-width="0.4" opacity="0.22"/>'
-        )
-        yy -= 3.1
-    out.append("</g>")
-    return "".join(out)
-
+# ------------------------------------------------------------- the parts
 
 def _qr_svg(payload: str, p: str, x: float, y: float, size: float, color: str) -> str:
     code = qr.encode(payload, ecl=qr.ECL_M)
@@ -220,26 +214,173 @@ def _qr_svg(payload: str, p: str, x: float, y: float, size: float, color: str) -
     )
 
 
+def _duotone_filter(p: str, ink: str) -> str:
+    """Maps a picture's luminance onto paper (light) → ink (dark)."""
+    ir, ig, ib = _rgb(ink)
+    pr, pg, pb = _rgb(PAPER)
+    rows = []
+    for i_c, p_c in ((ir, pr), (ig, pg), (ib, pb)):
+        d = p_c - i_c
+        rows.append(f"{_fmt(d * 0.2126)} {_fmt(d * 0.7152)} {_fmt(d * 0.0722)} 0 {_fmt(i_c)}")
+    rows.append("0 0 0 1 0")
+    return (
+        f'<filter id="{p}-duo" color-interpolation-filters="sRGB" x="0" y="0" width="100%" height="100%">'
+        f'<feColorMatrix type="matrix" values="{"  ".join(rows)}"/></filter>'
+    )
+
+
+def _preview_panel(stamp: Stamp, preview: Preview | None, p: str, pal: dict[str, str]) -> str:
+    x, y, w, h = PANEL
+    ink = pal["ink"]
+    out = []
+    if preview is not None:
+        uri = f"data:{preview.mime};base64,{base64.b64encode(preview.data).decode('ascii')}"
+        out.append(
+            f'<image x="{x}" y="{y}" width="{w}" height="{h}" preserveAspectRatio="xMidYMid slice" '
+            f'clip-path="url(#{p}-panel)" filter="url(#{p}-duo)" href="{uri}"/>'
+        )
+    else:
+        # An empty photo slot: ruled paper, a monogram of the host, and a tag.
+        out.append(f'<rect x="{x}" y="{y}" width="{w}" height="{h}" fill="{pal["wash"]}"/>')
+        rules = []
+        yy = y + 6.0
+        while yy < y + h - 3:
+            rules.append(f"M{x + 4} {_fmt(yy)}H{x + w - 4}")
+            yy += 5.0
+        out.append(f'<path d="{"".join(rules)}" stroke="{ink}" stroke-width="0.45" opacity="0.22"/>')
+        letter = next((c for c in stamp.host.upper() if c.isalnum()), "?")
+        out.append(
+            _text(x + w / 2, y + h / 2 + 27, letter, 78, SERIF, ink, weight="700", anchor="middle", opacity=0.16)
+        )
+        tag_w, tag_h = 58, 12
+        tx, ty = x + w - tag_w - 6, y + h - tag_h - 6
+        out.append(
+            f'<rect x="{_fmt(tx)}" y="{_fmt(ty)}" width="{tag_w}" height="{tag_h}" fill="{PAPER}" '
+            f'stroke="{ink}" stroke-width="0.7"/>'
+        )
+        out.append(_text(tx + tag_w / 2, ty + 8.6, "NO PREVIEW", 6.2, MONO, ink, weight="600", anchor="middle", spacing=1.2))
+    # Frame and corner brackets, like the mount around an identity photograph.
+    out.append(f'<rect x="{x}" y="{y}" width="{w}" height="{h}" fill="none" stroke="{ink}" stroke-width="1"/>')
+    b, o = 6, 3.5
+    for cx, cy, sx, sy in ((x, y, 1, 1), (x + w, y, -1, 1), (x, y + h, 1, -1), (x + w, y + h, -1, -1)):
+        out.append(
+            f'<path d="M{_fmt(cx - sx * o)} {_fmt(cy - sy * o + sy * b)}v{_fmt(-sy * b)}h{_fmt(sx * b)}" '
+            f'fill="none" stroke="{ink}" stroke-width="1.1"/>'
+        )
+    return "".join(out)
+
+
+def _chip(x: float, y: float, text: str, ink: str) -> tuple[str, float]:
+    """A small solid chip with a check mark; returns the markup and its width."""
+    w = 16 + 5.6 * len(text) + 1.4 * (len(text) - 1)
+    h = 15
+    out = [f'<rect x="{_fmt(x - w)}" y="{_fmt(y)}" width="{_fmt(w)}" height="{h}" rx="2" fill="{ink}"/>']
+    cx = x - w + 5
+    out.append(
+        f'<path d="M{_fmt(cx)} {_fmt(y + 7.6)}l2.2 2.3 4.2-5" fill="none" stroke="{PAPER}" '
+        f'stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round"/>'
+    )
+    out.append(_text(x - 6, y + 10.6, text, 7, MONO, PAPER, weight="700", anchor="end", spacing=1.4))
+    return "".join(out), w
+
+
+def _footer_bar(stamp: Stamp, ink: str) -> str:
+    """A solid bar carrying the address and a hash-derived set of bars."""
+    y0, y1 = H - FRAME - 16, H - FRAME
+    out = [f'<rect x="{FRAME}" y="{y0}" width="{W - 2 * FRAME}" height="{y1 - y0}" fill="{ink}"/>']
+    b = bytes.fromhex(stamp.sha256)
+    # Bars read right to left so the address gets whatever room remains.
+    xx = W - FRAME - 8.0
+    bars = []
+    for i in range(16):
+        bw = 0.7 + (b[i] % 5) * 0.35
+        xx -= bw
+        bars.append(f'<rect x="{_fmt(xx)}" y="{y0 + 4}" width="{_fmt(bw)}" height="{y1 - y0 - 8}"/>')
+        xx -= 1.1 + (b[16 + i] % 3) * 0.4
+    out.append(f'<g fill="{PAPER}">{"".join(bars)}</g>')
+    room = xx - 10 - (FRAME + 8)
+    address = shorten(stamp.address, max(8, int(room / 4.35)))
+    out.append(_text(FRAME + 8, y0 + 11, address, 7.2, MONO, PAPER, spacing=0.2, opacity=0.95))
+    return "".join(out)
+
+
+def _tear_line(y: float, ink: str) -> str:
+    """A serrated edge across the card, with a notch at either side."""
+    x0, x1 = FRAME, W - FRAME
+    tooth = 3.0
+    n = int((x1 - x0) / tooth)
+    d = [f"M{x0} {_fmt(y + 1)}"]
+    for i in range(n):
+        d.append(f"l{_fmt(tooth / 2)} -2l{_fmt(tooth / 2)} 2")
+    out = [f'<path d="{"".join(d)}" fill="none" stroke="{ink}" stroke-width="0.7" stroke-linejoin="round"/>']
+    for nx in (x0, x1):
+        out.append(f'<circle cx="{nx}" cy="{y}" r="3.2" fill="{PAPER}" stroke="{ink}" stroke-width="1.4"/>')
+    return "".join(out)
+
+
+def _ledger(stamp: Stamp, x0: float, x1: float, y: float, ink: str) -> str:
+    """Receipt line items with dotted leaders, a rule, and the total row.
+
+    The small items are the transaction: time, content type and status,
+    byte count, album number. The total is what a collector reads first:
+    the date and the short hash.
+    """
+    items: list[tuple[str, str]] = []
+    if len(stamp.fetched_at) >= 19 and stamp.fetched_at[10] == "T":
+        items.append(("TIME", f"{stamp.fetched_at[11:19]} UTC"))
+    kind = stamp.content_type.split(";")[0].strip() or "unknown"
+    items.append(("TYPE", f"{kind} · {stamp.status}" if stamp.status else kind))
+    items.append(("BYTES", f"{stamp.size:,}"))
+    items.append(("NO.", f"{stamp.number:03d}" if stamp.number else "—"))
+
+    out = []
+    room = x1 - x0
+    yy = y + 8
+    ry = y + 41  # the rule above the total row stays put however many items there are
+    for label, value in items:
+        value = shorten(value, max(6, int((room - 6.2 * len(label) - 14) / 4.45)))
+        out.append(_label(x0, yy, label, ink))
+        out.append(_text(x1, yy, value, 7.4, MONO, ink, anchor="end", opacity=0.92))
+        lx0 = x0 + 5.1 * len(label) + 5
+        lx1 = x1 - 4.45 * len(value) - 5
+        if lx1 - lx0 > 6:
+            out.append(
+                f'<line x1="{_fmt(lx0)}" y1="{_fmt(yy - 1.6)}" x2="{_fmt(lx1)}" y2="{_fmt(yy - 1.6)}" '
+                f'stroke="{ink}" stroke-width="0.7" stroke-dasharray="0.7 1.9" opacity="0.55"/>'
+            )
+        yy += 9.5
+    out.append(f'<line x1="{x0}" y1="{_fmt(ry)}" x2="{x1}" y2="{_fmt(ry)}" stroke="{ink}" stroke-width="0.8" stroke-dasharray="2.2 1.8"/>')
+    out.append(_label(x0, ry + 9, "DATE", ink))
+    out.append(_text(x1, ry + 9, "SHA-256", 6.2, MONO, ink, weight="600", anchor="end", spacing=1.5, opacity=0.72))
+    out.append(_text(x0, ry + 20.5, stamp.date, 11, MONO, ink, weight="700", spacing=0.3))
+    out.append(_text(x1, ry + 20.5, stamp.short, 11, MONO, ink, weight="700", anchor="end", spacing=0.3))
+    return "".join(out)
+
+
 # ------------------------------------------------------------- the stamp
 
-def stamp_body(stamp: Stamp, prefix: str = "s") -> str:
+def stamp_body(stamp: Stamp, prefix: str = "s", preview: Preview | None = None) -> str:
     """The inner markup of one stamp, in a ``0 0 W H`` coordinate space.
 
     ``prefix`` namespaces the ids so several stamps can share a document.
+    ``preview`` is the page's picture, if the album has one for it.
     """
     p = prefix
     pal = ink_for(stamp.sha256)
     ink = pal["ink"]
+    left, right = MARGIN, W - MARGIN
     out: list[str] = []
 
     holes = _perforations(W, H)
+    px, py, pw, ph = PANEL
     out.append("<defs>")
     out.append(f'<mask id="{p}-perf" maskUnits="userSpaceOnUse" x="-8" y="-8" width="{W + 16}" height="{H + 16}">')
     out.append(f'<rect x="0" y="0" width="{W}" height="{H}" fill="#fff"/>')
     out.append("".join(f'<circle cx="{_fmt(cx)}" cy="{_fmt(cy)}" r="{PERF_R}" fill="#000"/>' for cx, cy in holes))
     out.append("</mask>")
-    ax, ay, aw, ah = 26, 60, W - 52, 150
-    out.append(f'<clipPath id="{p}-art"><rect x="{ax}" y="{ay}" width="{aw}" height="{ah}"/></clipPath>')
+    out.append(f'<clipPath id="{p}-panel"><rect x="{px}" y="{py}" width="{pw}" height="{ph}"/></clipPath>')
+    if preview is not None:
+        out.append(_duotone_filter(p, ink))
     out.append("</defs>")
 
     # Paper with perforated edge, and a faint outline for each hole so the
@@ -249,75 +390,56 @@ def stamp_body(stamp: Stamp, prefix: str = "s") -> str:
     out.append("".join(f'<circle cx="{_fmt(cx)}" cy="{_fmt(cy)}" r="{PERF_R}"/>' for cx, cy in holes))
     out.append("</g>")
 
-    # Frames.
-    out.append(f'<rect x="15" y="15" width="{W - 30}" height="{H - 30}" fill="none" stroke="{ink}" stroke-width="1.6"/>')
-    out.append(f'<rect x="19" y="19" width="{W - 38}" height="{H - 38}" fill="none" stroke="{ink}" stroke-width="0.5"/>')
-    for cx, cy in ((19, 19), (W - 19, 19), (19, H - 19), (W - 19, H - 19)):
-        out.append(
-            f'<path d="M{cx} {cy - 4.5}l4.5 4.5-4.5 4.5-4.5-4.5z" fill="{PAPER}" stroke="{ink}" stroke-width="0.9"/>'
-        )
-
-    # Issuing host, in letter-spaced capitals, with rules either side.
-    host = stamp.host.upper()
-    if len(host) > 30:
-        host = host[:29] + "…"
+    # The card's rule.
     out.append(
-        f'<text x="{W / 2}" y="46" text-anchor="middle" font-family="{SERIF}" font-size="12.5" '
-        f'font-weight="600" letter-spacing="2.4" fill="{ink}">{_esc(host)}</text>'
-    )
-    rule_w = max(0.0, (W - 52 - 8.5 * len(host)) / 2 - 12)
-    if rule_w > 10:
-        out.append(f'<line x1="26" y1="42" x2="{_fmt(26 + rule_w)}" y2="42" stroke="{ink}" stroke-width="0.7"/>')
-        out.append(f'<line x1="{_fmt(W - 26 - rule_w)}" y1="42" x2="{W - 26}" y2="42" stroke="{ink}" stroke-width="0.7"/>')
-
-    # The picture.
-    out.append(_landscape(stamp.sha256, p, ax, ay, aw, ah, pal))
-    out.append(f'<rect x="{ax}" y="{ay}" width="{aw}" height="{ah}" fill="none" stroke="{ink}" stroke-width="1.1"/>')
-    out.append(
-        f'<rect x="{ax + 3}" y="{ay + 3}" width="{aw - 6}" height="{ah - 6}" fill="none" '
-        f'stroke="{PAPER}" stroke-width="0.6" opacity="0.7"/>'
+        f'<rect x="{FRAME}" y="{FRAME}" width="{W - 2 * FRAME}" height="{H - 2 * FRAME}" fill="none" '
+        f'stroke="{ink}" stroke-width="1.4"/>'
     )
 
-    # Title.
-    lines = wrap_title(stamp.caption)
-    ty = ay + ah + 24
-    for line in lines:
-        out.append(
-            f'<text x="{W / 2}" y="{ty}" text-anchor="middle" font-family="{SERIF}" font-size="13.5" '
-            f'font-style="italic" fill="{ink}">{_esc(line)}</text>'
-        )
-        ty += 17
-    if len(lines) < 2:
-        ty += 17
+    # Header: host, with a chip saying the bytes are filed, over a heavy rule.
+    chip, chip_w = _chip(right, 26, "FILED", ink)
+    out.append(chip)
+    out.append(_label(left, 29, "HOST", ink))
+    host_room = right - chip_w - 10 - left
+    out.append(
+        _text(left, 42, shorten(stamp.host.upper(), max(6, int(host_room / 8.0))), 11, MONO, ink, weight="700", spacing=1.8)
+    )
+    out.append(f'<line x1="{FRAME}" y1="52" x2="{W - FRAME}" y2="52" stroke="{ink}" stroke-width="1.4"/>')
 
-    # Date, hash and denomination on the left; QR on the right.
-    qr_size = 74
-    qx, qy = W - 26 - qr_size, H - 30 - qr_size - 6
-    lx = 28
-    out.append(f'<line x1="{lx}" y1="{qy + 2}" x2="{qx - 12}" y2="{qy + 2}" stroke="{ink}" stroke-width="0.6"/>')
-    out.append(
-        f'<text x="{lx}" y="{qy + 24}" font-family="{SERIF}" font-size="19" font-weight="600" '
-        f'letter-spacing="1" fill="{ink}">{_esc(stamp.date)}</text>'
-    )
-    out.append(
-        f'<text x="{lx}" y="{qy + 40}" font-family="{SERIF}" font-size="8.5" letter-spacing="1.8" '
-        f'fill="{ink}" opacity="0.8">SHA-256</text>'
-    )
-    out.append(
-        f'<text x="{lx}" y="{qy + 55}" font-family="{MONO}" font-size="13" letter-spacing="0.6" '
-        f'fill="{ink}">{stamp.short}</text>'
-    )
-    denom = human_size(stamp.size)
-    number = f"No. {stamp.number}" if stamp.number else ""
-    out.append(
-        f'<text x="{lx}" y="{qy + 74}" font-family="{SERIF}" font-size="10.5" letter-spacing="0.8" '
-        f'fill="{ink}" opacity="0.85">{_esc(" · ".join(x for x in (number, denom) if x))}</text>'
-    )
-    out.append(_qr_svg(stamp.qr_payload, p, qx, qy, qr_size, ink))
+    # The preview panel.
+    out.append(_preview_panel(stamp, preview, p, pal))
+
+    # Title, in large type.
+    ty = py + ph + 21
+    for line in wrap_title(stamp.caption, max_chars=32, max_lines=2):
+        out.append(_text(left, ty, line, 15, SERIF, ink, weight="700"))
+        ty += 18
+
+    # About: what the page says about itself, or its address.
+    ay = py + ph + 58
+    out.append(_label(left, ay, "ABOUT", ink))
+    out.append(f'<line x1="{left + 34}" y1="{ay - 2.4}" x2="{right}" y2="{ay - 2.4}" stroke="{ink}" stroke-width="0.5" opacity="0.5"/>')
+    if stamp.description:
+        lines = wrap_title(stamp.about, max_chars=60, max_lines=3)
+        for i, line in enumerate(lines):
+            out.append(_text(left, ay + 12 + i * 11, line, 9.2, SERIF, ink))
+    else:
+        for i, line in enumerate(wrap_title(stamp.about, max_chars=48, max_lines=3)):
+            out.append(_text(left, ay + 12 + i * 11, line, 8.4, MONO, ink, opacity=0.9))
+
+    # A serrated tear line, as on a till receipt, notched at the card's edge.
+    out.append(_tear_line(298, ink))
+
+    # The receipt: line items with leaders, a rule, and the total row.
+    qx, qy = right - QR_SIZE, 305
+    out.append(_ledger(stamp, left, qx - 12, 305, ink))
+    out.append(_qr_svg(stamp.qr_payload, p, qx, qy, QR_SIZE, ink))
+
+    out.append(_footer_bar(stamp, ink))
     return "".join(out)
 
 
-def render_stamp(stamp: Stamp) -> str:
+def render_stamp(stamp: Stamp, preview: Preview | None = None) -> str:
     """A complete standalone SVG document for one stamp."""
     title = _esc(stamp.label)
     return (
@@ -326,16 +448,25 @@ def render_stamp(stamp: Stamp) -> str:
         f'role="img" aria-label="Stamp: {title}">\n'
         f"<title>{title}</title>\n"
         f"<desc>{_esc(stamp.url)} — fetched {_esc(stamp.fetched_at)} — sha256 {stamp.sha256}</desc>\n"
-        f'<g id="stamp">{stamp_body(stamp)}</g>\n'
+        f'<g id="stamp">{stamp_body(stamp, "s", preview)}</g>\n'
         "</svg>\n"
     )
 
 
 # ------------------------------------------------------------- the sheet
 
-def render_sheet(stamps: Sequence[Stamp], paper: str = "a4", title: str | None = None) -> str:
-    """Up to eight stamps on a landscape sheet, ready to print and cut."""
+def render_sheet(
+    stamps: Sequence[Stamp],
+    paper: str = "a4",
+    title: str | None = None,
+    previews: dict[str, Preview] | None = None,
+) -> str:
+    """Up to eight stamps on a landscape sheet, ready to print and cut.
+
+    ``previews`` maps a stamp's hash to its picture, for those that have one.
+    """
     stamps = list(stamps)[:8]
+    previews = previews or {}
     wmm, hmm = PAPER_SIZES_MM[paper.lower()]
     pw, ph = wmm * MM_TO_PX, hmm * MM_TO_PX
     margin, gap, header, footer = 44.0, 22.0, 46.0, 30.0
@@ -374,9 +505,9 @@ def render_sheet(stamps: Sequence[Stamp], paper: str = "a4", title: str | None =
         f'height="{_fmt(ph - margin - 8)}" fill="none" stroke="{ink}" stroke-width="0.3" opacity="0.5"/>',
         f'<text x="{_fmt(x0)}" y="{_fmt(margin + 24)}" font-family="{SERIF}" font-size="17" font-weight="600" '
         f'letter-spacing="3" fill="{ink}">{_esc(heading.upper())}</text>',
-        f'<text x="{_fmt(x0 + grid_w)}" y="{_fmt(margin + 24)}" text-anchor="end" font-family="{SERIF}" '
-        f'font-size="12" font-style="italic" fill="{ink}" opacity="0.85">'
-        f'{len(stamps)} of 8 · printed {today}</text>',
+        f'<text x="{_fmt(x0 + grid_w)}" y="{_fmt(margin + 24)}" text-anchor="end" font-family="{MONO}" '
+        f'font-size="10.5" letter-spacing="1" fill="{ink}" opacity="0.85">'
+        f'{len(stamps)} OF 8 · PRINTED {today}</text>',
         f'<line x1="{_fmt(x0)}" y1="{_fmt(margin + 34)}" x2="{_fmt(x0 + grid_w)}" y2="{_fmt(margin + 34)}" '
         f'stroke="{ink}" stroke-width="0.7" opacity="0.7"/>',
     ]
@@ -390,7 +521,7 @@ def render_sheet(stamps: Sequence[Stamp], paper: str = "a4", title: str | None =
                 f'<svg x="{_fmt(x)}" y="{_fmt(y)}" width="{_fmt(sw)}" height="{_fmt(sh)}" '
                 f'viewBox="-8 -8 {W + 16} {H + 16}" overflow="visible">'
                 f"<title>{_esc(s.label)}</title><desc>{_esc(s.url)} — fetched {_esc(s.fetched_at)} — sha256 {s.sha256}</desc>"
-                f'<g filter="url(#shadow)">{stamp_body(s, prefix=f"s{i}")}</g></svg>'
+                f'<g filter="url(#shadow)">{stamp_body(s, f"s{i}", previews.get(s.sha256))}</g></svg>'
             )
         else:
             out.append(
@@ -398,13 +529,13 @@ def render_sheet(stamps: Sequence[Stamp], paper: str = "a4", title: str | None =
                 f'fill="none" stroke="{ink}" stroke-width="0.6" stroke-dasharray="3 4" opacity="0.35"/>'
             )
     out.append(
-        f'<text x="{_fmt(x0)}" y="{_fmt(ph - margin - 6)}" font-family="{SERIF}" font-size="10" '
+        f'<text x="{_fmt(x0)}" y="{_fmt(ph - margin - 6)}" font-family="{MONO}" font-size="9" '
         f'letter-spacing="1" fill="{ink}" opacity="0.75">'
         "EACH CODE READS stamp:sha256:… — CHECK A STAMP WITH  stamp verify &lt;hash&gt;</text>"
     )
     out.append(
-        f'<text x="{_fmt(x0 + grid_w)}" y="{_fmt(ph - margin - 6)}" text-anchor="end" font-family="{SERIF}" '
-        f'font-size="10" letter-spacing="1" fill="{ink}" opacity="0.75">STAMP {__version__} · '
+        f'<text x="{_fmt(x0 + grid_w)}" y="{_fmt(ph - margin - 6)}" text-anchor="end" font-family="{MONO}" '
+        f'font-size="9" letter-spacing="1" fill="{ink}" opacity="0.75">STAMP {__version__} · '
         "GITHUB.COM/LOKI-INU/STAMP</text>"
     )
     out.append("\n</svg>\n")
@@ -429,6 +560,7 @@ figcaption { margin-top: 14px; font-size: 13px; color: #cfc6b4; }
 figcaption b { display: block; font-weight: 600; color: #f1ebdd; font-size: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 figcaption a { color: #a79f8f; text-decoration: none; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: block; }
 figcaption a:hover { color: #e9e2d3; text-decoration: underline; }
+figcaption p { margin: 6px 0 4px; font-size: 12.5px; line-height: 1.4; color: #b9b09c; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
 figcaption code { font: 12px/1 ui-monospace, Menlo, Consolas, monospace; color: #b9b09c; }
 .empty { grid-column: 1 / -1; text-align: center; color: #a79f8f; padding: 80px 0; font-style: italic; }
 footer { padding: 24px 48px 48px; color: #7f776a; font-size: 13px; border-top: 1px solid #3a352d; }
@@ -443,12 +575,14 @@ def render_album(stamps: Iterable[Stamp], title: str = "Stamp album") -> str:
     cards = []
     for s in stamps:
         svg = f"stamps/{s.sha256}.svg"
+        about = f"<p>{_esc(s.description)}</p>" if s.description else ""
         cards.append(
             "<figure>"
             f'<a href="{svg}" title="Open stamp"><img src="{svg}" alt="{_esc(s.label)}" loading="lazy"></a>'
             "<figcaption>"
             f"<b title=\"{_esc(s.label)}\">{_esc(s.label)}</b>"
             f'<a href="{_esc(s.url)}" title="{_esc(s.url)}">{_esc(s.host or s.url)}</a>'
+            f"{about}"
             f"{_esc(s.date)} · <code>{s.short}</code> · {_esc(human_size(s.size))}"
             "</figcaption></figure>"
         )
