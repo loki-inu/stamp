@@ -1,4 +1,4 @@
-"""Command line: ``stamp add | list | show | verify | sheet | album | redraw``."""
+"""Command line: ``stamp add | list | show | verify | sheet | album | redraw | gui``."""
 
 from __future__ import annotations
 
@@ -7,10 +7,12 @@ import sys
 import urllib.error
 from pathlib import Path
 
+from dataclasses import dataclass
+
 from . import __version__, preview as preview_mod
 from .fetch import URLError, extract_meta, fetch, fetch_preview, normalize_url
 from .preview import Preview
-from .store import Album, Ambiguous, NotFound, StampError
+from .store import Album, Ambiguous, NotFound, Stamp, StampError
 from .svg import PAPER_SIZES_MM, render_album, render_sheet
 
 
@@ -24,49 +26,90 @@ def _err(msg: str) -> None:
 
 # --------------------------------------------------------------- commands
 
-def cmd_add(album: Album, args: argparse.Namespace) -> int:
+class FileError(Exception):
+    """A page could not be filed. ``code`` matches the command's exit status."""
+
+    def __init__(self, message: str, code: int = 1) -> None:
+        super().__init__(message)
+        self.code = code
+
+
+@dataclass
+class Filed:
+    stamp: Stamp
+    created: bool
+    notice: str | None = None
+
+
+def file_page(
+    album: Album,
+    raw_url: str,
+    *,
+    title: str | None = None,
+    description: str | None = None,
+    no_preview: bool = False,
+    timeout: float = 30,
+) -> Filed:
+    """Fetch ``raw_url`` and file it in ``album``.
+
+    The same work ``stamp add`` does. Raises :class:`FileError` when the
+    address is unusable or the server cannot be reached.
+    """
     try:
-        url = normalize_url(args.url)
+        url = normalize_url(raw_url)
     except URLError as e:
-        _err(str(e))
-        return 2
+        raise FileError(str(e), 2) from e
     try:
-        got = fetch(url, timeout=args.timeout)
+        got = fetch(url, timeout=timeout)
     except urllib.error.HTTPError as e:
-        _err(f"{url} answered {e.code} {e.reason}")
-        return 1
+        raise FileError(f"{url} answered {e.code} {e.reason}", 1) from e
     except urllib.error.URLError as e:
-        _err(f"could not fetch {url}: {e.reason}")
-        return 1
+        raise FileError(f"could not fetch {url}: {e.reason}", 1) from e
     except (URLError, TimeoutError, OSError, ValueError) as e:
-        _err(f"could not fetch {url}: {e}")
-        return 1
+        raise FileError(f"could not fetch {url}: {e}", 1) from e
 
     meta = extract_meta(got.body, got.content_type, got.final_url or url)
-    title = args.title or meta.title
-    description = args.description or meta.description
-
     preview: Preview | None = None
-    if meta.image_url and not args.no_preview and not album.has(got.body):
-        preview = _get_preview(meta.image_url, timeout=min(args.timeout, 20))
+    if meta.image_url and not no_preview and not album.has(got.body):
+        preview = _get_preview(meta.image_url, timeout=min(timeout, 20))
 
     stamp, created = album.add(
         url,
         got.body,
         content_type=got.content_type,
-        title=title,
-        requested_url=args.url if args.url != url else None,
+        title=title or meta.title,
+        requested_url=raw_url if raw_url != url else None,
         final_url=got.final_url,
         status=got.status,
-        description=description,
+        description=description or meta.description,
         preview=preview,
         preview_source=meta.image_url,
     )
-    if created:
+    notice = None
+    if created and meta.image_url and not no_preview and preview is None:
+        notice = "no usable preview picture; the stamp shows an empty slot"
+    return Filed(stamp, created, notice)
+
+
+def cmd_add(album: Album, args: argparse.Namespace) -> int:
+    try:
+        filed = file_page(
+            album,
+            args.url,
+            title=args.title,
+            description=args.description,
+            no_preview=args.no_preview,
+            timeout=args.timeout,
+        )
+    except FileError as e:
+        _err(str(e))
+        return e.code
+    stamp = filed.stamp
+    if filed.created:
         _say(f"stamped  {stamp.short}  {stamp.label}")
         _say(f"         {album.svg_path(stamp.sha256)}")
-        if meta.image_url and not args.no_preview and preview is None:
-            _say("         (no usable preview picture; the stamp shows an empty slot)")
+        if filed.notice:
+            _say(f"         ({filed.notice})")
     else:
         _say(f"already in the album as {stamp.short} (same bytes, {stamp.date})")
         _say(f"         {album.svg_path(stamp.sha256)}")
@@ -223,7 +266,19 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("redraw", help="draw stamps again in the current design; bytes and metadata stay put")
     p.add_argument("hashes", nargs="*", metavar="hash", help="specific stamps to redraw (default: all)")
     p.set_defaults(func=cmd_redraw)
+
+    p = sub.add_parser("gui", help="open the album in a browser window")
+    p.add_argument("--port", type=int, default=0, help="port to listen on (default: a free one)")
+    p.add_argument("--no-open", action="store_true", help="do not open a browser; print the address and wait")
+    p.set_defaults(func=cmd_gui)
     return parser
+
+
+def cmd_gui(album: Album, args: argparse.Namespace) -> int:
+    from .gui import serve
+
+    serve(album, port=args.port, open_browser=not args.no_open)
+    return 0
 
 
 def main(argv: list[str] | None = None) -> int:
