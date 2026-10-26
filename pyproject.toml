@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "stamp-philately"
-version = "0.2.0"
+version = "0.3.0"
 description = "Postage stamps for the web: snapshot a page, get a printable stamp, keep an album."
 readme = "README.md"
 license = { file = "LICENSE" }
@@ -14,6 +14,8 @@ keywords = ["philately", "stamps", "svg", "snapshot", "archive", "qr"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Environment :: Console",
+    "Environment :: MacOS X",
+    "Operating System :: MacOS",
     "Intended Audience :: End Users/Desktop",
     "License :: OSI Approved :: MIT License",
     "Operating System :: OS Independent",
@@ -43,6 +45,9 @@ stamp = "stamp.cli:main"
 
 [tool.setuptools.packages.find]
 include = ["stamp*"]
+
+[tool.setuptools.package-data]
+"stamp.gui" = ["static/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

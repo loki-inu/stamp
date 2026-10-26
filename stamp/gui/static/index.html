@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="stamp-token" content="{{TOKEN}}">
+  <title>Stamp</title>
+  <link rel="icon" href="/favicon.ico" type="image/png">
+  <link rel="stylesheet" href="/app.css">
+</head>
+<body>
+  <header class="toolbar">
+    <div class="brand">
+      <h1>Stamp</h1>
+      <p id="count">Opening the album…</p>
+    </div>
+    <search>
+      <label class="sr" for="q">Filter stamps</label>
+      <input id="q" type="search" placeholder="Filter by title, site, or hash" autocomplete="off" enterkeyhint="search">
+    </search>
+    <div class="tools">
+      <button type="button" id="sheet-btn">Print sheet</button>
+      <button type="button" id="add-btn" class="primary">Add URL</button>
+    </div>
+  </header>
+
+  <main id="grid" aria-live="polite"></main>
+
+  <footer>
+    <p id="home"></p>
+    <p>Stamp {{VERSION}} · a keepsake of pages that mattered, not a proof of them. <button type="button" id="redraw-btn" class="link">Redraw stamps</button></p>
+  </footer>
+
+  <p id="status" class="toast" hidden aria-live="polite"></p>
+
+  <dialog id="add-dialog" aria-labelledby="add-title" closedby="any">
+    <h2 id="add-title">File a page</h2>
+    <p class="lede">Fetch it, file the bytes under their hash, and print a stamp.</p>
+    <form id="add-form">
+      <label for="url">Address</label>
+      <input id="url" name="url" type="url" required autofocus placeholder="https://example.com" autocomplete="url" spellcheck="false">
+      <details>
+        <summary>Title and picture</summary>
+        <label for="title">Title <span class="hint">optional, otherwise the page’s own</span></label>
+        <input id="title" name="title" type="text" autocomplete="off">
+        <label for="description">About <span class="hint">optional</span></label>
+        <textarea id="description" name="description" rows="3"></textarea>
+        <label class="check"><input id="no-preview" name="no_preview" type="checkbox"> Skip the preview picture</label>
+      </details>
+      <p id="add-error" class="error" role="alert" hidden></p>
+      <div class="row">
+        <button type="button" id="add-cancel">Cancel</button>
+        <button type="submit" class="primary" id="add-submit">File this page</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="stamp-dialog" aria-labelledby="stamp-title" closedby="any">
+    <div class="stamp-layout">
+      <img id="stamp-img" alt="" width="300" height="380">
+      <div>
+        <h2 id="stamp-title"></h2>
+        <p id="stamp-about" class="lede"></p>
+        <dl id="stamp-facts"></dl>
+        <p id="verify-result" class="verify" hidden></p>
+        <div class="row">
+          <button type="button" id="verify-btn">Verify</button>
+          <button type="button" id="open-btn">Open page</button>
+          <button type="button" id="reveal-btn">Show in Finder</button>
+          <button type="button" id="stamp-close">Close</button>
+        </div>
+      </div>
+    </div>
+  </dialog>
+
+  <dialog id="sheet-dialog" aria-labelledby="sheet-title" closedby="any">
+    <h2 id="sheet-title">Sheet</h2>
+    <p id="sheet-note" class="lede"></p>
+    <div class="sheet-frame">
+      <img id="sheet-img" alt="Printable sheet of stamps" width="1123" height="794">
+    </div>
+    <div class="row">
+      <button type="button" id="sheet-close">Close</button>
+      <button type="button" id="sheet-reveal">Show in Finder</button>
+      <button type="button" id="sheet-print" class="primary">Print…</button>
+    </div>
+  </dialog>
+
+  <iframe id="print-frame" title="Printable sheet"></iframe>
+  <script src="/app.js"></script>
+</body>
+</html>
