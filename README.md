@@ -70,6 +70,7 @@ album of 2 stamps -> ~/.stamp/album.html
 
 Open `sheet.svg` in a browser and print it; open `album.html` to browse the
 collection. Both are plain files that work from `file://` with no server.
+Or skip the files and open the album itself: `stamp gui`, or the Mac app below.
 
 <p align="center">
   <img src="docs/example-stamp.svg" alt="One stamp for peps.python.org: the Python logo in olive ink, the title PEP 20 – The Zen of Python, a three-line description, a receipt of time, type, bytes and number, the date and short hash in bold, and a QR code" width="300">
@@ -79,6 +80,37 @@ collection. Both are plain files that work from `file://` with no server.
 
 Left: a page that describes itself with Open Graph tags. Right: a page that
 offers nothing but bytes, so the stamp shows its address and an empty slot.
+
+## On a Mac
+
+The album is also an application. It uses the same `~/.stamp` directory as
+the command, so a stamp filed in either place shows up in the other. Drop a
+link on the window, or use Add URL. Click a stamp to read it, check that the
+filed bytes still hash, and print a sheet of the newest eight.
+
+<p align="center">
+  <img src="docs/macos-album.png" alt="The Stamp album window: four stamps in a row on warm paper, with a filter field, Print sheet and Add URL" width="100%">
+</p>
+
+```sh
+git clone https://github.com/loki-inu/stamp
+cd stamp
+sh macos/build-app.sh
+open dist/Stamp.app
+```
+
+That needs Python 3.11 or newer and the Xcode command line tools, for
+`swiftc`. The app is not notarized, so the first time, right-click it and
+choose Open. If `swiftc` is not installed, the same script still builds an
+app, and that one opens the album in your browser.
+
+The app runs whichever `python3` it finds: Homebrew, python.org, or
+`$STAMP_PYTHON` if you point it at one. Preview pictures are only shrunk when
+that Python has Pillow (`python3 -m pip install --user Pillow`). Without it,
+large pictures get the empty slot, same as the command.
+
+`stamp gui` opens this same album in a browser on any system, Mac or not.
+Ctrl-C closes it.
 
 ## Commands
 
@@ -91,6 +123,7 @@ offers nothing but bytes, so the stamp shows its address and an empty slot.
 | `stamp sheet [HASH…] [--out F] [--paper a4\|letter] [--title T]` | Lay up to eight stamps out on a landscape sheet, ready to print and cut. Defaults to the newest eight. |
 | `stamp album [--out F]` | Write a static `album.html` gallery of every stamp. |
 | `stamp redraw [HASH…]` | Draw stamps again in the current design. Bytes, hashes and metadata are untouched; use it after upgrading. |
+| `stamp gui` | Open the album in a browser window. Same album as everything else. Ctrl-C closes it. |
 
 `HASH` may be any unambiguous prefix, the full hash, or the `stamp:sha256:…`
 string a QR code scans to.
