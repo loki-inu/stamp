@@ -531,7 +531,7 @@ def render_sheet(
     out.append(
         f'<text x="{_fmt(x0)}" y="{_fmt(ph - margin - 6)}" font-family="{MONO}" font-size="9" '
         f'letter-spacing="1" fill="{ink}" opacity="0.75">'
-        "EACH CODE READS stamp:sha256:… — CHECK A STAMP WITH  stamp verify &lt;hash&gt;</text>"
+        "EACH CODE OPENS ITS PAGE — CHECK A STAMP WITH  stamp verify &lt;hash&gt;</text>"
     )
     out.append(
         f'<text x="{_fmt(x0 + grid_w)}" y="{_fmt(ph - margin - 6)}" text-anchor="end" font-family="{MONO}" '

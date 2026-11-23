@@ -113,6 +113,15 @@ class Stamp:
 
     @property
     def qr_payload(self) -> str:
+        """What the QR code encodes.
+
+        An ``http://`` or ``https://`` URL (``url``, scheme case aside) is
+        encoded exactly, so a phone scan opens the page. A file path, another
+        scheme, or a missing URL falls back to ``stamp:sha256:<hash>``.
+        """
+        url = self.url or ""
+        if url.lower().startswith(("http://", "https://")):
+            return url
         return f"stamp:sha256:{self.sha256}"
 
     def to_json(self) -> str:

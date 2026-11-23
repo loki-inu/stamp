@@ -4,7 +4,7 @@ import xml.etree.ElementTree as ET
 from stamp import qr
 from stamp.preview import Preview
 from stamp.store import Stamp
-from stamp.svg import human_size, ink_for, render_album, render_sheet, render_stamp, shorten, wrap_title
+from stamp.svg import H, QR_SIZE, W, human_size, ink_for, render_album, render_sheet, render_stamp, shorten, wrap_title
 
 SVG_NS = "{http://www.w3.org/2000/svg}"
 
@@ -38,6 +38,27 @@ def test_stamp_svg_is_well_formed_and_carries_the_hash():
     assert qrs[0].get("viewBox") == f"0 0 {code.size} {code.size}"
 
 
+def test_long_url_qr_renders_inside_its_box():
+    url = "https://docs.example.org/" + "reference/section/" * 12
+    assert len(url) >= 200
+    stamp = Stamp(sha256="ab" * 32, url=url, fetched_at="2026-01-01T00:00:00Z")
+    assert stamp.qr_payload == url
+    text = render_stamp(stamp)
+    root = ET.fromstring(text)
+    qrs = [e for e in root.iter(f"{SVG_NS}svg") if (e.get("id") or "").endswith("-qr")]
+    assert len(qrs) == 1
+    code = qr.encode(url, ecl=qr.ECL_M)
+    el = qrs[0]
+    assert el.get("viewBox") == f"0 0 {code.size} {code.size}"
+    assert float(el.get("width")) == QR_SIZE
+    assert float(el.get("height")) == QR_SIZE
+    x, y = float(el.get("x")), float(el.get("y"))
+    assert 0 <= x and x + QR_SIZE <= W
+    assert 0 <= y and y + QR_SIZE <= H
+    assert stamp.short in text
+    assert stamp.sha256 in text
+
+
 def test_stamp_svg_is_deterministic():
     s = _stamps(1)[0]
     assert render_stamp(s) == render_stamp(s)
@@ -63,6 +84,8 @@ def test_sheet_smoke():
         ids = [e.get("id") for e in root.iter() if e.get("id")]
         assert len(ids) == len(set(ids))
         assert f"{min(n, 8)} OF 8" in text
+        assert "EACH CODE OPENS ITS PAGE" in text
+        assert "stamp:sha256" not in text
 
 
 def test_sheet_letter_paper_and_title():
