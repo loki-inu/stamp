@@ -52,6 +52,25 @@ def test_files_are_written(album, stamped):
     assert "2026-01-02" in svg
 
 
+def test_qr_payload_is_the_https_url():
+    digest = "ab" * 32
+    for url in (
+        "https://example.com/page",
+        "http://example.com/page",
+        "HTTPS://Example.COM/Path?q=1",
+    ):
+        stamp = Stamp(sha256=digest, url=url, fetched_at="2026-01-01T00:00:00Z")
+        assert stamp.qr_payload == url
+
+
+def test_qr_payload_falls_back_without_an_http_url():
+    digest = "cd" * 32
+    expected = f"stamp:sha256:{digest}"
+    for url in ("", "/var/pages/note.html", "file:///var/pages/note.html", "ftp://files.example/a"):
+        stamp = Stamp(sha256=digest, url=url, fetched_at="2026-01-01T00:00:00Z")
+        assert stamp.qr_payload == expected
+
+
 def test_metadata_roundtrip_keeps_unknown_fields():
     s = Stamp.from_json(json.dumps({"sha256": "ab" * 32, "url": "https://x.example/", "fetched_at": "2026-01-01T00:00:00Z", "future_field": 1}))
     assert s.extra == {"future_field": 1}

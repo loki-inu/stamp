@@ -50,6 +50,16 @@ def test_known_data_capacities():
     assert qr._data_codewords(40, qr.ECL_H) == 1276
 
 
+def test_long_url_encodes_within_versions_1_to_40():
+    url = "https://docs.example.org/" + "reference/section/" * 12
+    assert len(url) >= 200
+    code = qr.encode(url, ecl=qr.ECL_M)
+    assert 1 <= code.version <= 40
+    assert code.size == 4 * code.version + 17
+    assert len(code.modules) == code.size
+    assert all(len(row) == code.size for row in code.modules)
+
+
 def test_version_selection_and_limits():
     assert qr.encode("").version == 1
     assert qr.encode("a" * 17, ecl=qr.ECL_L).version == 1

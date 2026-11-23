@@ -7,8 +7,8 @@ prints a small postage stamp for it. The stamp is laid out like an identity
 card for the page: the host and a FILED chip across the top, the page's own
 preview picture, its title in large type, a few lines about what it is, then
 a receipt of the fetch: time, type, bytes and album number as line items,
-with the date and short hash as the total, beside a QR code that carries the
-full hash. Stamps collect in a local album. When you have a few, print a
+with the date and short hash as the total, beside a QR code of the page's
+URL. Stamps collect in a local album. When you have a few, print a
 sheet of eight and cut along the perforations.
 
 <p align="center">
@@ -92,8 +92,8 @@ offers nothing but bytes, so the stamp shows its address and an empty slot.
 | `stamp album [--out F]` | Write a static `album.html` gallery of every stamp. |
 | `stamp redraw [HASH…]` | Draw stamps again in the current design. Bytes, hashes and metadata are untouched; use it after upgrading. |
 
-`HASH` may be any unambiguous prefix, the full hash, or the `stamp:sha256:…`
-string a QR code scans to.
+`HASH` may be any unambiguous prefix, the full hash, or a `stamp:sha256:…`
+string (what a QR code scans to when the stamp has no http(s) URL).
 
 ## The album on disk
 
@@ -141,8 +141,10 @@ layout is fixed, like a card, so the eye knows where to find things.
   the exact byte count and the stamp's **number** in your album; then a rule
   and the total row, the **date** (`YYYY-MM-DD`, UTC) and the **SHA-256**
   short hash (first twelve hex digits), in bold.
-- **QR code** encoding `stamp:sha256:<full hash>`, so a printed stamp can be
-  looked up again.
+- **QR code** of the page's own `http://` or `https://` URL, exactly, so a
+  phone scan opens the page. A file path, another scheme, or a missing URL
+  still encodes `stamp:sha256:<full hash>`. The hash stays printed on the
+  stamp; `stamp verify` checks the stored bytes against it.
 - A **footer bar** with the address and a hash-derived set of bars.
 
 Stamps are SVG, so they scale to any size and print crisply. The only raster
